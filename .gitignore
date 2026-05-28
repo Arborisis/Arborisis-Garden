@@ -1,0 +1,14 @@
+node_modules
+.next
+.cache
+out
+dist
+.env
+.env.local
+*.db
+*.db-journal
+prisma/dev.db
+__pycache__
+.DS_Store
+.playwright-mcp
+arborisis-mobile.png

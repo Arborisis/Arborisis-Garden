@@ -1,0 +1,100 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Device {
+  id        String   @id @default(cuid())
+  serial    String   @unique
+  name      String
+  tokenHash String?
+  lastSeen  DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  plants    Plant[]
+  readings  Reading[]
+}
+
+model Plant {
+  id              String   @id @default(cuid())
+  name            String
+  species         String?
+  location        String?
+  notes           String?
+  deviceId        String?
+  moistureDryRaw  Int      @default(52000)
+  moistureWetRaw  Int      @default(22000)
+  targetMoisture  Int      @default(48)
+  minLightLux     Int      @default(250)
+  maxSoilTempC    Float    @default(30)
+  minSoilTempC    Float    @default(10)
+  memorySummary   String   @default("")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  device          Device?  @relation(fields: [deviceId], references: [id])
+  readings        Reading[]
+  alerts          Alert[]
+  messages        ChatMessage[]
+  memories        Memory[]
+}
+
+model Reading {
+  id                String   @id @default(cuid())
+  deviceId          String
+  plantId           String?
+  recordedAt        DateTime @default(now())
+  soilMoistureRaw   Int?
+  soilMoisturePct   Float?
+  soilTempC         Float?
+  airTempC          Float?
+  airHumidityPct    Float?
+  pressureHpa       Float?
+  lightLux          Float?
+  batteryMv         Int?
+  wifiRssi          Int?
+  firmwareVersion   String?
+  device            Device   @relation(fields: [deviceId], references: [id])
+  plant             Plant?   @relation(fields: [plantId], references: [id])
+
+  @@index([deviceId, recordedAt])
+  @@index([plantId, recordedAt])
+}
+
+model Alert {
+  id        String   @id @default(cuid())
+  plantId   String
+  severity  String
+  title     String
+  body      String
+  status    String   @default("open")
+  createdAt DateTime @default(now())
+  plant     Plant    @relation(fields: [plantId], references: [id])
+
+  @@index([plantId, status, createdAt])
+}
+
+model Memory {
+  id        String   @id @default(cuid())
+  plantId   String
+  kind      String
+  content   String
+  createdAt DateTime @default(now())
+  plant     Plant    @relation(fields: [plantId], references: [id])
+
+  @@index([plantId, createdAt])
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  plantId   String
+  role      String
+  content   String
+  createdAt DateTime @default(now())
+  plant     Plant    @relation(fields: [plantId], references: [id])
+
+  @@index([plantId, createdAt])
+}

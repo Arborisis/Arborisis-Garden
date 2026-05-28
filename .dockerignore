@@ -1,0 +1,11 @@
+node_modules
+.next
+.cache
+prisma/dev.db
+*.db
+*.db-journal
+.env
+.git
+.DS_Store
+.playwright-mcp
+arborisis-mobile.png
