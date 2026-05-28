@@ -11,7 +11,7 @@ import { buildAgenticSystemPrompt, buildToolResultPrompt } from "./prompts";
 import { persistMemories, updateMemorySummary, closeResolvedAlerts } from "./memory";
 
 const TOOL_CALL_REGEX = /<tool_call>\s*({[\s\S]*?})\s*<\/tool_call>/g;
-const JSON_BLOCK_REGEX = /<?json\u003e?\s*([\s\S]*?)\s*<?\/json\u003e?/;
+const JSON_BLOCK_REGEX = /```(?:json)?\s*([\s\S]*?)\s*```/;
 
 async function callOpenRouterForReasoning(messages: Array<{ role: string; content: string }>): Promise<string> {
   const apiKey = process.env.OPENROUTER_API_KEY;
