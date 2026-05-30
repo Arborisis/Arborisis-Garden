@@ -1,17 +1,49 @@
 {
   "name": "Arborisis Garden",
   "short_name": "Arborisis",
-  "description": "Compagnon IA connecte pour plantes",
-  "start_url": "/",
+  "description": "Compagnon IA connecté pour vos plantes — capteurs, alertes et conseils en temps réel",
+  "start_url": "/?source=pwa",
   "display": "standalone",
-  "background_color": "#f6f8f4",
-  "theme_color": "#19352f",
+  "orientation": "portrait-primary",
+  "background_color": "#060e08",
+  "theme_color": "#060e08",
+  "lang": "fr",
+  "dir": "ltr",
+  "scope": "/",
+  "categories": ["lifestyle", "health"],
   "icons": [
     {
       "src": "/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
       "purpose": "any"
     }
-  ]
+  ],
+  "shortcuts": [
+    {
+      "name": "Tableau de bord",
+      "short_name": "Dashboard",
+      "url": "/?tab=dashboard",
+      "icons": [{ "src": "/icon.svg", "sizes": "any" }]
+    },
+    {
+      "name": "Chat IA",
+      "short_name": "Chat",
+      "url": "/?tab=chat",
+      "icons": [{ "src": "/icon.svg", "sizes": "any" }]
+    }
+  ],
+  "prefer_related_applications": false
 }

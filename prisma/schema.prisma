@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -40,6 +40,9 @@ model Plant {
   alerts          Alert[]
   messages        ChatMessage[]
   memories        Memory[]
+  photos          PlantPhoto[]
+  calendarEvents  CalendarEvent[]
+  mlSamples       MLTrainingSample[]
 }
 
 model Reading {
@@ -97,4 +100,87 @@ model ChatMessage {
   plant     Plant    @relation(fields: [plantId], references: [id])
 
   @@index([plantId, createdAt])
+}
+
+model PlantPhoto {
+  id              String   @id @default(cuid())
+  plantId         String
+  title           String
+  objectKey       String   @unique
+  mimeType        String
+  sizeBytes       Int
+  takenAt         DateTime?
+  analysis        String   @default("")
+  observations    String   @default("[]")
+  recommendations String   @default("[]")
+  healthScore     Int?
+  confidence      Float    @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  plant           Plant    @relation(fields: [plantId], references: [id])
+
+  @@index([plantId, createdAt])
+}
+
+model CalendarEvent {
+  id          String    @id @default(cuid())
+  plantId     String
+  title       String
+  description String?
+  startsAt    DateTime
+  endsAt      DateTime?
+  category    String    @default("check")
+  priority    String    @default("medium")
+  status      String    @default("planned")
+  source      String    @default("manual")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  plant       Plant     @relation(fields: [plantId], references: [id])
+
+  @@index([plantId, startsAt])
+  @@index([plantId, status, startsAt])
+}
+
+model PushSubscription {
+  id        String   @id @default(cuid())
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model MLTrainingSample {
+  id          String   @id @default(cuid())
+  plantId     String
+  plant       Plant    @relation(fields: [plantId], references: [id], onDelete: Cascade)
+  sampledAt   DateTime
+  features    String
+  label       Float
+  labelSource String   @default("photo")
+  photoId     String?
+  prediction  Float?
+  createdAt   DateTime @default(now())
+
+  @@index([plantId, sampledAt])
+}
+
+model MLModelVersion {
+  id          String   @id @default(cuid())
+  version     String   @unique
+  trainedAt   DateTime @default(now())
+  sampleCount Int
+  weights     String
+  metrics     String?
+  isActive    Boolean  @default(false)
+}
+
+model PairingCode {
+  id           String    @id @default(cuid())
+  code         String    @unique
+  deviceSerial String
+  expiresAt    DateTime
+  usedAt       DateTime?
+  createdAt    DateTime  @default(now())
 }

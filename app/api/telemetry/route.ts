@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { telemetrySchema } from "@/lib/schemas";
 import { evaluateReading, summarizeReading } from "@/lib/rules";
+import { moisturePercentFromRaw } from "@/lib/calibration";
+import { sendPushToAll } from "@/lib/push";
 
 export const runtime = "nodejs";
 
@@ -56,6 +58,11 @@ export async function POST(request: NextRequest) {
     });
   }
 
+  const calibratedMoisturePct =
+    typeof payload.soilMoistureRaw === "number"
+      ? moisturePercentFromRaw(payload.soilMoistureRaw, plant.moistureDryRaw, plant.moistureWetRaw)
+      : payload.soilMoisturePct;
+
   const reading = await prisma.reading.create({
     data: {
       deviceId: device.id,
@@ -63,7 +70,7 @@ export async function POST(request: NextRequest) {
       recordedAt: payload.recordedAt ? new Date(payload.recordedAt) : new Date(),
       firmwareVersion: payload.firmwareVersion,
       soilMoistureRaw: payload.soilMoistureRaw,
-      soilMoisturePct: payload.soilMoisturePct,
+      soilMoisturePct: calibratedMoisturePct,
       soilTempC: payload.soilTempC,
       airTempC: payload.airTempC,
       airHumidityPct: payload.airHumidityPct,
@@ -79,6 +86,12 @@ export async function POST(request: NextRequest) {
     await prisma.alert.createMany({
       data: alerts.map((alert) => ({ ...alert, plantId: plant!.id }))
     });
+
+    const criticalAlerts = alerts.filter((a) => a.severity === "critical" || a.severity === "warning");
+    if (criticalAlerts.length) {
+      const first = criticalAlerts[0];
+      sendPushToAll({ title: first.title, body: first.body, tag: `alert-${plant.id}` }).catch(() => null);
+    }
   }
 
   await prisma.memory.create({

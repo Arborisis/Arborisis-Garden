@@ -30,9 +30,69 @@ export const plantUpdateSchema = z.object({
   maxSoilTempC: z.number().min(-20).max(80)
 });
 
+export const plantCalibrationSchema = z.object({
+  plantId: z.string().min(1).optional()
+});
+
 export const chatSchema = z.object({
   plantId: z.string().min(1),
-  message: z.string().min(1).max(2000)
+  message: z.string().min(1).max(2000),
+  webSearch: z.boolean().optional(),
+  weatherLocation: z.string().min(1).max(120).optional(),
+  timezone: z.string().min(1).max(80).optional()
+});
+
+export const weatherQuerySchema = z.object({
+  location: z.string().min(1).max(120).optional(),
+  latitude: z.coerce.number().min(-90).max(90).optional(),
+  longitude: z.coerce.number().min(-180).max(180).optional(),
+  timezone: z.string().min(1).max(80).optional()
+});
+
+export const insightsQuerySchema = z.object({
+  plantId: z.string().min(1),
+  weatherLocation: z.string().min(1).max(120).optional(),
+  timezone: z.string().min(1).max(80).optional()
+});
+
+export const plantPhotoQuerySchema = z.object({
+  plantId: z.string().min(1)
+});
+
+export const plantPhotoCreateSchema = z.object({
+  plantId: z.string().min(1),
+  title: z.string().min(1).max(90).optional(),
+  imageDataUrl: z.string().min(32).max(7_500_000),
+  takenAt: z.string().datetime().optional()
+});
+
+export const plantPhotoDeleteSchema = z.object({
+  id: z.string().min(1)
+});
+
+export const calendarEventQuerySchema = z.object({
+  plantId: z.string().min(1)
+});
+
+export const calendarEventCreateSchema = z.object({
+  plantId: z.string().min(1),
+  title: z.string().min(1).max(120),
+  description: z.string().max(1200).optional().nullable(),
+  startsAt: z.string().datetime(),
+  endsAt: z.string().datetime().optional().nullable(),
+  category: z.enum(["water", "check", "relocate", "prune", "fertilize", "wait", "custom"]).default("check"),
+  priority: z.enum(["high", "medium", "low"]).default("medium"),
+  status: z.enum(["planned", "done", "skipped"]).default("planned"),
+  source: z.enum(["manual", "agent"]).default("manual")
+});
+
+export const calendarEventUpdateSchema = calendarEventCreateSchema.partial().extend({
+  id: z.string().min(1),
+  plantId: z.string().min(1).optional()
+});
+
+export const calendarEventDeleteSchema = z.object({
+  id: z.string().min(1)
 });
 
 // Agentic output schemas
@@ -63,6 +123,22 @@ export const agentActionSchema = z.object({
   parameters: z.record(z.union([z.string(), z.number()])).optional()
 });
 
+export const agentCareScheduleItemSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  dueAt: z.string(),
+  priority: z.enum(["high", "medium", "low"]),
+  actionType: z.enum(["water", "relocate", "prune", "fertilize", "check", "wait", "custom"]),
+  cadence: z.enum(["once", "daily", "weekly", "as_needed"]),
+  successCriteria: z.string()
+});
+
+export const agentResearchSourceSchema = z.object({
+  title: z.string(),
+  url: z.string(),
+  snippet: z.string().optional()
+});
+
 export const agentMemoryUpdateSchema = z.object({
   kind: z.enum(["sensor_observation", "agent_advice", "goal", "reflection", "user_preference", "care_plan"]),
   content: z.string(),
@@ -90,6 +166,8 @@ export const agentStructuredOutputSchema = z.object({
     rootCauses: z.array(z.string())
   }),
   proposedActions: z.array(agentActionSchema),
+  careSchedule: z.array(agentCareScheduleItemSchema).default([]),
+  webSources: z.array(agentResearchSourceSchema).default([]),
   memoryUpdates: z.array(agentMemoryUpdateSchema),
   alertResolutions: z.array(z.string()),
   followUpPlan: z.object({

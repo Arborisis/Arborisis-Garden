@@ -1,4 +1,5 @@
-import type { Alert, ChatMessage, Memory, Plant, Reading } from "@prisma/client";
+import type { Alert, CalendarEvent, ChatMessage, Memory, Plant, PlantPhoto, Reading } from "@prisma/client";
+import type { WeatherContext } from "@/lib/weather";
 
 export type AgentContext = {
   plant: Plant;
@@ -6,6 +7,9 @@ export type AgentContext = {
   openAlerts: Alert[];
   memories: Memory[];
   chatHistory?: ChatMessage[];
+  weather?: WeatherContext | null;
+  recentPhotos?: PlantPhoto[];
+  calendarEvents?: CalendarEvent[];
 };
 
 export type TrendAnalysis = {
@@ -33,6 +37,22 @@ export type ProposedAction = {
   rationale: string;
   expectedOutcome: string;
   parameters?: Record<string, string | number>;
+};
+
+export type CareScheduleItem = {
+  id: string;
+  title: string;
+  dueAt: string;
+  priority: "high" | "medium" | "low";
+  actionType: ProposedAction["type"];
+  cadence: "once" | "daily" | "weekly" | "as_needed";
+  successCriteria: string;
+};
+
+export type ResearchSource = {
+  title: string;
+  url: string;
+  snippet?: string;
 };
 
 export type AgentMemoryUpdate = {
@@ -70,6 +90,8 @@ export type AgentStructuredOutput = {
     rootCauses: string[];
   };
   proposedActions: ProposedAction[];
+  careSchedule: CareScheduleItem[];
+  webSources: ResearchSource[];
   memoryUpdates: AgentMemoryUpdate[];
   alertResolutions: string[];
   followUpPlan: {
@@ -82,7 +104,10 @@ export type AgentStructuredOutput = {
 export type AgentExecutionResult = {
   structuredOutput: AgentStructuredOutput;
   executedTools: { tool: string; result: unknown }[];
+  webSources: ResearchSource[];
+  webSearchRequests: number;
   persistedMemories: Memory[];
   closedAlertMemories: Memory[];
+  persistedCalendarEvents: CalendarEvent[];
   updatedSummary: string | null;
 };

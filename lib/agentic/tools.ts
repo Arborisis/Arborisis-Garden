@@ -1,5 +1,6 @@
-import type { Plant, Reading, PrismaClient } from "@prisma/client";
+import type { CalendarEvent, Plant, PlantPhoto, Reading } from "@prisma/client";
 import type { AgentToolDefinition, TrendAnalysis, HealthScore } from "./types";
+import type { WeatherContext } from "@/lib/weather";
 
 export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
@@ -34,10 +35,71 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "check_alert_correlation",
     description: "Verifie si les alertes ouvertes correspondent aux tendances actuelles"
+  },
+  {
+    name: "estimate_watering_need",
+    description: "Estime le volume d'eau prudent et la methode d'arrosage selon l'ecart a la cible",
+    parameters: {
+      potDiameterCm: { type: "number", description: "diametre approximatif du pot en cm (optionnel)", required: false },
+      substrate: { type: "string", description: "type de substrat si connu", required: false }
+    }
+  },
+  {
+    name: "create_care_schedule",
+    description: "Construit un planning de soins et de controles pour les prochains jours",
+    parameters: {
+      days: { type: "number", description: "horizon du planning en jours (defaut: 7)", required: false },
+      focus: { type: "string", description: "objectif principal: arrosage, lumiere, temperature, rempotage, general", required: false }
+    }
+  },
+  {
+    name: "summarize_sensor_gaps",
+    description: "Detecte les donnees manquantes, mesures anciennes et capteurs peu fiables"
+  },
+  {
+    name: "assess_environment_window",
+    description: "Identifie les meilleures fenetres d'action selon lumiere, temperature et humidite recentes",
+    parameters: {
+      hours: { type: "number", description: "nombre d'heures recentes a inspecter (defaut: 24)", required: false }
+    }
+  },
+  {
+    name: "get_weather_context",
+    description: "Recupere la meteo locale fournie par l'API du site: conditions actuelles, pluie, vent, UV, evapotranspiration et conseil jardinage"
+  },
+  {
+    name: "inspect_photo_gallery",
+    description: "Consulte les dernieres photos de la plante et les analyses IA visuelles associees",
+    parameters: {
+      limit: { type: "number", description: "nombre de photos recentes a consulter (defaut: 6)", required: false }
+    }
+  },
+  {
+    name: "get_calendar_events",
+    description: "Consulte le planning de soins existant: arrosage, controles, deplacements, taille, fertilisation et taches agent",
+    parameters: {
+      daysAhead: { type: "number", description: "nombre de jours futurs a consulter (defaut: 14)", required: false },
+      includeDone: { type: "boolean", description: "inclure les taches deja terminees", required: false }
+    }
   }
 ];
 
-export function createToolExecutor(plant: Plant, readings: Reading[]) {
+function parseJsonStringArray(value: string) {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function createToolExecutor(
+  plant: Plant,
+  readings: Reading[],
+  weather?: WeatherContext | null,
+  photos: PlantPhoto[] = [],
+  calendarEvents: CalendarEvent[] = []
+) {
   return {
     analyze_trends: (params: { metric: string; window?: number }): TrendAnalysis => {
       const window = params.window ?? 12;
@@ -216,6 +278,225 @@ export function createToolExecutor(plant: Plant, readings: Reading[]) {
       return {
         correlated: true,
         note: "Les alertes sont correlees aux mesures actuelles"
+      };
+    },
+
+    estimate_watering_need: (params?: { potDiameterCm?: number; substrate?: string }) => {
+      const latest = readings[0];
+      if (!latest || typeof latest.soilMoisturePct !== "number") {
+        return {
+          shouldWater: false,
+          volumeMl: 0,
+          confidence: 0,
+          method: "Verifier manuellement le substrat avant tout apport",
+          rationale: "Aucune humidite sol recente exploitable"
+        };
+      }
+
+      const gap = plant.targetMoisture - latest.soilMoisturePct;
+      const potDiameter = Math.max(8, Math.min(40, params?.potDiameterCm ?? 14));
+      const potFactor = Math.pow(potDiameter / 14, 2);
+      const substrateFactor = params?.substrate?.toLowerCase().includes("cactus") ? 0.55 : 1;
+      const rawVolume = gap <= 0 ? 0 : gap * 9 * potFactor * substrateFactor;
+      const volumeMl = Math.round(Math.max(0, Math.min(650, rawVolume)) / 10) * 10;
+      const shouldWater = gap > 6;
+
+      return {
+        shouldWater,
+        volumeMl: shouldWater ? Math.max(40, volumeMl) : 0,
+        confidence: Math.min(0.92, Math.max(0.35, Math.abs(gap) / 25)),
+        method: shouldWater
+          ? "Arrosage lent en 2 passages, puis controle humidite apres 30 a 60 minutes"
+          : "Attendre et recontroler avant d'arroser",
+        rationale: `Humidite actuelle ${latest.soilMoisturePct.toFixed(0)}%, cible ${plant.targetMoisture}%, ecart ${gap.toFixed(0)} points`
+      };
+    },
+
+    create_care_schedule: (params?: { days?: number; focus?: string }) => {
+      const days = Math.max(1, Math.min(21, params?.days ?? 7));
+      const focus = params?.focus ?? "general";
+      const latest = readings[0];
+      const now = new Date();
+      const tasks: Array<Record<string, string>> = [];
+
+      const addTask = (offsetHours: number, title: string, priority: string, actionType: string, successCriteria: string) => {
+        const due = new Date(now.getTime() + offsetHours * 3600000);
+        tasks.push({
+          id: `task-${tasks.length + 1}`,
+          title,
+          dueAt: due.toISOString(),
+          priority,
+          actionType,
+          cadence: offsetHours <= 24 ? "once" : "as_needed",
+          successCriteria
+        });
+      };
+
+      if (!latest) {
+        addTask(1, "Installer ou verifier les capteurs", "high", "check", "Une nouvelle mesure complete apparait dans l'historique");
+        addTask(24, "Premier diagnostic apres mesures", "medium", "check", "Au moins 3 mesures coherentes sont disponibles");
+        return { horizonDays: days, focus, tasks };
+      }
+
+      const moisture = latest.soilMoisturePct;
+      if (typeof moisture === "number" && moisture < plant.targetMoisture - 8) {
+        addTask(1, "Controler le substrat et arroser prudemment si sec", "high", "water", "Humidite proche de la cible sans eau stagnante");
+        addTask(6, "Recontroler la remontee d'humidite", "high", "check", "Humidite stabilisee ou en hausse douce");
+      } else if (typeof moisture === "number" && moisture > plant.targetMoisture + 18) {
+        addTask(1, "Suspendre l'arrosage et aerer le substrat", "high", "wait", "Humidite redescend progressivement");
+        addTask(24, "Verifier odeur, drainage et feuilles molles", "medium", "check", "Aucun signe de stress racinaire");
+      } else {
+        addTask(24, "Controle humidite de routine", "medium", "check", "Humidite reste dans une marge de 8 points autour de la cible");
+      }
+
+      if (typeof latest.lightLux === "number" && latest.lightLux < plant.minLightLux) {
+        addTask(3, "Tester un emplacement plus lumineux", "medium", "relocate", `Lumiere mesuree au-dessus de ${plant.minLightLux} lux en journee`);
+      }
+
+      if (
+        typeof latest.soilTempC === "number" &&
+        (latest.soilTempC < plant.minSoilTempC || latest.soilTempC > plant.maxSoilTempC)
+      ) {
+        addTask(2, "Stabiliser la temperature du pot", "high", "relocate", `Sol revenu entre ${plant.minSoilTempC} et ${plant.maxSoilTempC} C`);
+      }
+
+      addTask(Math.min(days * 24, 72), "Bilan court du planning", "low", "check", "Comparer tendance humidite, lumiere et temperature");
+      return { horizonDays: days, focus, tasks: tasks.slice(0, 6) };
+    },
+
+    summarize_sensor_gaps: () => {
+      const latest = readings[0];
+      const missing: string[] = [];
+      if (!latest) {
+        return { status: "no_data", missing: ["Toutes les mesures"], recommendation: "Verifier l'alimentation et l'envoi telemetry" };
+      }
+
+      const ageMinutes = Math.round((Date.now() - new Date(latest.recordedAt).getTime()) / 60000);
+      const fields: Array<[keyof Reading, string]> = [
+        ["soilMoisturePct", "humidite sol"],
+        ["soilTempC", "temperature sol"],
+        ["airTempC", "temperature air"],
+        ["airHumidityPct", "humidite air"],
+        ["lightLux", "lumiere"],
+        ["wifiRssi", "Wi-Fi"]
+      ];
+
+      fields.forEach(([key, label]) => {
+        if (latest[key] == null) missing.push(label);
+      });
+
+      return {
+        status: missing.length || ageMinutes > 60 ? "attention" : "ok",
+        latestAgeMinutes: ageMinutes,
+        missing,
+        recommendation: ageMinutes > 60
+          ? "Les donnees sont anciennes; verifier la connexion avant une decision forte"
+          : missing.length
+            ? "Completer les champs manquants pour augmenter la confiance"
+            : "Capteurs suffisamment complets pour une decision"
+      };
+    },
+
+    assess_environment_window: (params?: { hours?: number }) => {
+      const hours = Math.max(3, Math.min(72, params?.hours ?? 24));
+      const cutoff = Date.now() - hours * 3600000;
+      const recent = readings.filter((reading) => new Date(reading.recordedAt).getTime() >= cutoff);
+
+      if (!recent.length) {
+        return { window: "unknown", confidence: 0, rationale: "Aucune mesure dans la fenetre demandee" };
+      }
+
+      const avg = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
+      const lightValues = recent.map((r) => r.lightLux).filter((v): v is number => typeof v === "number");
+      const tempValues = recent.map((r) => r.soilTempC).filter((v): v is number => typeof v === "number");
+      const avgLight = lightValues.length ? avg(lightValues) : null;
+      const avgTemp = tempValues.length ? avg(tempValues) : null;
+      const tempOk = avgTemp == null || (avgTemp >= plant.minSoilTempC && avgTemp <= plant.maxSoilTempC);
+      const lightOk = avgLight == null || avgLight >= plant.minLightLux;
+
+      return {
+        window: tempOk && lightOk ? "favorable" : "a_surveillance",
+        confidence: Math.min(1, recent.length / 12),
+        avgLightLux: avgLight == null ? null : Math.round(avgLight),
+        avgSoilTempC: avgTemp == null ? null : Number(avgTemp.toFixed(1)),
+        recommendation: tempOk && lightOk
+          ? "Bonne fenetre pour observation, rotation ou soin leger"
+          : "Reporter les interventions stressantes et corriger d'abord l'environnement"
+      };
+    },
+
+    get_weather_context: () => {
+      if (!weather) {
+        return {
+          status: "unavailable",
+          recommendation: "La meteo du site n'a pas pu etre recuperee; ne pas baser une decision forte dessus."
+        };
+      }
+
+      return {
+        status: "ok",
+        location: weather.location,
+        current: weather.current,
+        today: weather.today,
+        nextHours: weather.hourly.slice(0, 8),
+        gardening: weather.gardening,
+        source: weather.source
+      };
+    },
+
+    inspect_photo_gallery: (params?: { limit?: number }) => {
+      const limit = Math.max(1, Math.min(12, params?.limit ?? 6));
+      const selected = photos.slice(0, limit);
+
+      if (!selected.length) {
+        return {
+          status: "empty",
+          recommendation: "Aucune photo analysee. Demander une photo recente pour evaluer les feuilles, le port et le substrat."
+        };
+      }
+
+      return {
+        status: "ok",
+        photos: selected.map((photo) => ({
+          id: photo.id,
+          title: photo.title,
+          takenAt: photo.takenAt?.toISOString() ?? null,
+          createdAt: photo.createdAt.toISOString(),
+          analysis: photo.analysis,
+          observations: parseJsonStringArray(photo.observations),
+          recommendations: parseJsonStringArray(photo.recommendations),
+          healthScore: photo.healthScore,
+          confidence: photo.confidence
+        }))
+      };
+    },
+
+    get_calendar_events: (params?: { daysAhead?: number; includeDone?: boolean }) => {
+      const daysAhead = Math.max(1, Math.min(60, params?.daysAhead ?? 14));
+      const now = Date.now();
+      const until = now + daysAhead * 86400000;
+      const events = calendarEvents
+        .filter((event) => {
+          const start = new Date(event.startsAt).getTime();
+          const statusOk = params?.includeDone ? true : event.status !== "done" && event.status !== "skipped";
+          return statusOk && start >= now - 86400000 && start <= until;
+        })
+        .slice(0, 30);
+
+      return {
+        status: events.length ? "ok" : "empty",
+        horizonDays: daysAhead,
+        events: events.map((event) => ({
+          id: event.id,
+          title: event.title,
+          description: event.description,
+          startsAt: event.startsAt.toISOString(),
+          endsAt: event.endsAt?.toISOString() ?? null,
+          category: event.category,
+          priority: event.priority,
+          status: event.status,
+          source: event.source
+        }))
       };
     }
   };

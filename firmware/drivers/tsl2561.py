@@ -8,6 +8,8 @@ CONTROL = 0x00
 TIMING = 0x01
 DATA0LOW = 0x0C
 POWER_ON = 0x03
+INTEGRATION_402MS = 0x02
+GAIN_16X = 0x10
 
 
 class TSL2561:
@@ -25,7 +27,10 @@ class TSL2561:
         if address not in scan:
             raise OSError("TSL2561 light sensor not found")
         self.i2c.writeto_mem(self.address, COMMAND | CONTROL, bytes([POWER_ON]))
-        self.i2c.writeto_mem(self.address, COMMAND | TIMING, bytes([0x02]))
+        self.integration_ms = 402
+        self.gain_16x = False
+        timing = INTEGRATION_402MS | (GAIN_16X if self.gain_16x else 0)
+        self.i2c.writeto_mem(self.address, COMMAND | TIMING, bytes([timing]))
         time.sleep_ms(450)
 
     def _read_u16(self, reg):
@@ -37,6 +42,12 @@ class TSL2561:
         ch1 = self._read_u16(DATA0LOW + 2)
         if ch0 == 0:
             return 0
+
+        scale = 402 / self.integration_ms
+        if not self.gain_16x:
+            scale *= 16
+        ch0 *= scale
+        ch1 *= scale
 
         ratio = ch1 / ch0
         if ratio <= 0.5:
