@@ -15,6 +15,7 @@ import {
   CalendarDays,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Clock,
   CloudSun,
@@ -137,6 +138,14 @@ type CalendarItem = {
   source: string;
   createdAt: string;
   updatedAt: string;
+};
+
+type CalendarEventForm = {
+  title: string;
+  description: string;
+  startsAt: string;
+  category: string;
+  priority: string;
 };
 
 type WeatherContext = {
@@ -324,7 +333,7 @@ export function GardenApp() {
   const [showPairingModal, setShowPairingModal] = useState(false);
   const [showUnpairConfirm, setShowUnpairConfirm] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<Event & { prompt(): Promise<void>; userChoice: Promise<{ outcome: string }> } | null>(null);
-  const [eventForm, setEventForm] = useState({
+  const [eventForm, setEventForm] = useState<CalendarEventForm>({
     title: "Controle plante",
     description: "",
     startsAt: toDatetimeLocal(new Date(Date.now() + 24 * 3600000)),
@@ -1654,91 +1663,19 @@ export function GardenApp() {
             </div>
           )}
 
-          <section className={`panel calendarPanel ${tabHidden(["plus"])}`}>
-        <div className="panelHeader">
-          <div>
-            <h2>Calendrier</h2>
-            <p className="small">{calendarStatus || "Planning manuel et taches ajoutees par l'agent."}</p>
-          </div>
-          <CalendarDays size={18} />
-        </div>
-        <div className="calendarForm">
-          <input
-            value={eventForm.title}
-            onChange={(event) => setEventForm({ ...eventForm, title: event.target.value })}
-            placeholder="Tache"
+          <PlantCalendar
+            className={tabHidden(["plus"])}
+            plant={plant}
+            timezone={timezone}
+            events={calendarEvents}
+            busy={calendarBusy}
+            status={calendarStatus}
+            form={eventForm}
+            setForm={setEventForm}
+            onSave={saveCalendarEvent}
+            onUpdateStatus={updateCalendarStatus}
+            onDelete={deleteCalendarEvent}
           />
-          <input
-            type="datetime-local"
-            value={eventForm.startsAt}
-            onChange={(event) => setEventForm({ ...eventForm, startsAt: event.target.value })}
-          />
-          <div className="calendarControls">
-            <select
-              value={eventForm.category}
-              onChange={(event) => setEventForm({ ...eventForm, category: event.target.value })}
-            >
-              <option value="check">Controle</option>
-              <option value="water">Arrosage</option>
-              <option value="relocate">Emplacement</option>
-              <option value="prune">Taille</option>
-              <option value="fertilize">Engrais</option>
-              <option value="custom">Autre</option>
-            </select>
-            <select
-              value={eventForm.priority}
-              onChange={(event) => setEventForm({ ...eventForm, priority: event.target.value })}
-            >
-              <option value="high">Haute</option>
-              <option value="medium">Moyenne</option>
-              <option value="low">Basse</option>
-            </select>
-          </div>
-          <textarea
-            value={eventForm.description}
-            onChange={(event) => setEventForm({ ...eventForm, description: event.target.value })}
-            placeholder="Notes"
-            rows={2}
-          />
-          <button className="secondaryButton calendarAddButton" onClick={saveCalendarEvent} disabled={!plant || calendarBusy}>
-            <Plus size={17} />
-            Ajouter au planning
-          </button>
-        </div>
-        <div className="calendarList">
-          {calendarEvents.length ? calendarEvents.map((event) => (
-            <article className={`calendarItem ${event.priority} ${event.status}`} key={event.id}>
-              <div>
-                <span className="calendarDate">{formatDateTime(event.startsAt, timezone)}</span>
-                <strong>{event.title}</strong>
-                {event.description && <p>{event.description}</p>}
-                <div className="calendarTags">
-                  <span>{event.category}</span>
-                  <span>{event.source === "agent" ? "agent IA" : "manuel"}</span>
-                </div>
-              </div>
-              <div className="calendarActions">
-                <button
-                  className={`statusCheck ${event.status === "done" ? "checked" : ""}`}
-                  onClick={() => void updateCalendarStatus(event.id, event.status === "done" ? "planned" : "done")}
-                  aria-label={event.status === "done" ? "Remettre a planifier" : "Marquer fait"}
-                  title={event.status === "done" ? "Remettre a planifier" : "Marquer fait"}
-                >
-                  <CheckCircle2 size={16} />
-                </button>
-                <button className="iconButton smallIcon" onClick={() => void deleteCalendarEvent(event.id)} aria-label="Supprimer" title="Supprimer">
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            </article>
-          )) : (
-            <div className="emptyState">
-              <CalendarDays size={20} />
-              <span>Aucune tache planifiee.</span>
-            </div>
-          )}
-        </div>
-          </section>
 
           <section className={`panel cyclePanel ${tabHidden(["meteo"])}`}>
         <div className="panelHeader">
@@ -2079,6 +2016,234 @@ function PlantLevel({ careScore }: { careScore: number }) {
         </div>
       </div>
     </div>
+  );
+}
+
+function PlantCalendar({
+  className,
+  plant,
+  timezone,
+  events,
+  busy,
+  status,
+  form,
+  setForm,
+  onSave,
+  onUpdateStatus,
+  onDelete
+}: {
+  className?: string;
+  plant: Plant | undefined;
+  timezone: string;
+  events: CalendarItem[];
+  busy: boolean;
+  status: string;
+  form: CalendarEventForm;
+  setForm: (form: CalendarEventForm) => void;
+  onSave: () => void;
+  onUpdateStatus: (id: string, status: "planned" | "done" | "skipped") => void;
+  onDelete: (id: string) => void;
+}) {
+  const todayKey = useMemo(() => getCalendarDateKey(new Date(), timezone), [timezone]);
+  const [visibleMonth, setVisibleMonth] = useState(() => startOfCalendarMonth(new Date()));
+  const [selectedDay, setSelectedDay] = useState(() => getLocalDateKey(new Date()));
+
+  const days = useMemo(() => buildCalendarMonth(visibleMonth), [visibleMonth]);
+  const eventsByDay = useMemo(() => groupCalendarEventsByDay(events, timezone), [events, timezone]);
+  const sortedEvents = useMemo(() => sortCalendarEvents(events), [events]);
+  const selectedEvents = eventsByDay.get(selectedDay) ?? [];
+  const monthEventCount = days
+    .filter((day) => day.inMonth)
+    .reduce((count, day) => count + (eventsByDay.get(day.key)?.length ?? 0), 0);
+  const plannedCount = events.filter((event) => event.status !== "done").length;
+  const doneCount = events.filter((event) => event.status === "done").length;
+  const nextEvent = sortedEvents.find((event) => event.status !== "done" && new Date(event.startsAt).getTime() >= Date.now());
+  const monthLabel = capitalizeLabel(visibleMonth.toLocaleDateString("fr-BE", { month: "long", year: "numeric" }));
+
+  function openDay(day: CalendarDayCell) {
+    setSelectedDay(day.key);
+    if (!day.inMonth) setVisibleMonth(startOfCalendarMonth(day.date));
+  }
+
+  function moveMonth(delta: number) {
+    setVisibleMonth((month) => new Date(month.getFullYear(), month.getMonth() + delta, 1));
+  }
+
+  function goToday() {
+    const today = new Date();
+    setVisibleMonth(startOfCalendarMonth(today));
+    setSelectedDay(getCalendarDateKey(today, timezone));
+  }
+
+  return (
+    <section className={`panel calendarPanel ${className ?? ""}`}>
+      <div className="panelHeader calendarHeader">
+        <div>
+          <h2>Calendrier</h2>
+          <p className="small">{status || "Planning manuel et taches ajoutees par l'agent."}</p>
+        </div>
+        <CalendarDays size={18} />
+      </div>
+
+      <div className="calendarHero">
+        <div>
+          <span className="eyebrow">Planning vivant</span>
+          <strong>{monthLabel}</strong>
+          <p>{nextEvent ? `Prochain soin: ${nextEvent.title}` : "Aucun soin urgent dans les prochains jours."}</p>
+        </div>
+        <div className="calendarNav" aria-label="Navigation calendrier">
+          <button type="button" className="iconButton smallIcon" onClick={() => moveMonth(-1)} aria-label="Mois precedent" title="Mois precedent">
+            <ChevronLeft size={16} />
+          </button>
+          <button type="button" className="calendarTodayButton" onClick={goToday}>
+            <Clock size={14} />
+            Aujourd'hui
+          </button>
+          <button type="button" className="iconButton smallIcon" onClick={() => moveMonth(1)} aria-label="Mois suivant" title="Mois suivant">
+            <ChevronRight size={16} />
+          </button>
+        </div>
+      </div>
+
+      <div className="calendarStats" aria-label="Resume du calendrier">
+        <div>
+          <span>{monthEventCount}</span>
+          <small>ce mois</small>
+        </div>
+        <div>
+          <span>{plannedCount}</span>
+          <small>a faire</small>
+        </div>
+        <div>
+          <span>{doneCount}</span>
+          <small>faits</small>
+        </div>
+      </div>
+
+      <div className="calendarWeekdays" aria-hidden="true">
+        {["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"].map((day) => <span key={day}>{day}</span>)}
+      </div>
+
+      <div className="calendarMonthGrid">
+        {days.map((day) => {
+          const dayEvents = eventsByDay.get(day.key) ?? [];
+          const firstEvent = dayEvents[0];
+          return (
+            <button
+              type="button"
+              className={`calendarDay ${day.inMonth ? "" : "outside"} ${day.key === todayKey ? "today" : ""} ${day.key === selectedDay ? "selected" : ""} ${dayEvents.length ? "hasEvents" : ""}`}
+              onClick={() => openDay(day)}
+              aria-pressed={day.key === selectedDay}
+              aria-label={`${formatCalendarDayLabel(day.key)}, ${dayEvents.length} tache${dayEvents.length > 1 ? "s" : ""}`}
+              key={day.key}
+            >
+              <span className="calendarDayTop">
+                <span className="calendarDayNumber">{day.date.getDate()}</span>
+                {dayEvents.length > 0 && <span className="calendarDayCount">{dayEvents.length}</span>}
+              </span>
+              <span className="calendarDayDots">
+                {dayEvents.slice(0, 3).map((event) => (
+                  <span className={`calendarDot ${event.priority}`} key={event.id} />
+                ))}
+              </span>
+              {firstEvent && <small>{firstEvent.title}</small>}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="calendarSelected">
+        <div className="calendarSelectedHeader">
+          <div>
+            <span className="eyebrow">Jour selectionne</span>
+            <strong>{formatCalendarDayLabel(selectedDay)}</strong>
+          </div>
+          <span>{selectedEvents.length} tache{selectedEvents.length > 1 ? "s" : ""}</span>
+        </div>
+
+        <div className="calendarList">
+          {selectedEvents.length ? selectedEvents.map((event) => (
+            <article className={`calendarItem ${event.priority} ${event.status}`} key={event.id}>
+              <div>
+                <span className="calendarDate">{formatEventTimeRange(event, timezone)}</span>
+                <strong>{event.title}</strong>
+                {event.description && <p>{event.description}</p>}
+                <div className="calendarTags">
+                  <span>{calendarCategoryLabel(event.category)}</span>
+                  <span>{event.source === "agent" ? "agent IA" : "manuel"}</span>
+                </div>
+              </div>
+              <div className="calendarActions">
+                <button
+                  className={`statusCheck ${event.status === "done" ? "checked" : ""}`}
+                  onClick={() => void onUpdateStatus(event.id, event.status === "done" ? "planned" : "done")}
+                  aria-label={event.status === "done" ? "Remettre a planifier" : "Marquer fait"}
+                  title={event.status === "done" ? "Remettre a planifier" : "Marquer fait"}
+                >
+                  <CheckCircle2 size={16} />
+                </button>
+                <button className="iconButton smallIcon" onClick={() => void onDelete(event.id)} aria-label="Supprimer" title="Supprimer">
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            </article>
+          )) : (
+            <div className="emptyState">
+              <CalendarDays size={20} />
+              <span>Aucune tache ce jour.</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="calendarForm">
+        <div className="calendarFormTitle">
+          <Plus size={16} />
+          <strong>Nouveau soin</strong>
+        </div>
+        <input
+          value={form.title}
+          onChange={(event) => setForm({ ...form, title: event.target.value })}
+          placeholder="Tache"
+        />
+        <input
+          type="datetime-local"
+          value={form.startsAt}
+          onChange={(event) => setForm({ ...form, startsAt: event.target.value })}
+        />
+        <div className="calendarControls">
+          <select
+            value={form.category}
+            onChange={(event) => setForm({ ...form, category: event.target.value })}
+          >
+            <option value="check">Controle</option>
+            <option value="water">Arrosage</option>
+            <option value="relocate">Emplacement</option>
+            <option value="prune">Taille</option>
+            <option value="fertilize">Engrais</option>
+            <option value="custom">Autre</option>
+          </select>
+          <select
+            value={form.priority}
+            onChange={(event) => setForm({ ...form, priority: event.target.value })}
+          >
+            <option value="high">Haute</option>
+            <option value="medium">Moyenne</option>
+            <option value="low">Basse</option>
+          </select>
+        </div>
+        <textarea
+          value={form.description}
+          onChange={(event) => setForm({ ...form, description: event.target.value })}
+          placeholder="Notes"
+          rows={2}
+        />
+        <button className="secondaryButton calendarAddButton" onClick={onSave} disabled={!plant || busy}>
+          <Plus size={17} />
+          Ajouter au planning
+        </button>
+      </div>
+    </section>
   );
 }
 
@@ -2467,6 +2632,100 @@ function prepareImageDataUrl(file: File) {
 function toDatetimeLocal(date: Date) {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
   return local.toISOString().slice(0, 16);
+}
+
+type CalendarDayCell = {
+  date: Date;
+  key: string;
+  inMonth: boolean;
+};
+
+function startOfCalendarMonth(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function getLocalDateKey(date: Date) {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function getCalendarDateKey(value: string | Date, timezone: string) {
+  const date = typeof value === "string" ? new Date(value) : value;
+  if (Number.isNaN(date.getTime())) return typeof value === "string" ? value.slice(0, 10) : getLocalDateKey(new Date());
+
+  const parts = new Intl.DateTimeFormat("fr-BE", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    timeZone: timezone
+  }).formatToParts(date);
+  const year = parts.find((part) => part.type === "year")?.value ?? String(date.getFullYear());
+  const month = parts.find((part) => part.type === "month")?.value ?? pad(date.getMonth() + 1);
+  const day = parts.find((part) => part.type === "day")?.value ?? pad(date.getDate());
+  return `${year}-${month}-${day}`;
+}
+
+function buildCalendarMonth(month: Date): CalendarDayCell[] {
+  const first = startOfCalendarMonth(month);
+  const mondayOffset = (first.getDay() + 6) % 7;
+  const start = new Date(first);
+  start.setDate(first.getDate() - mondayOffset);
+
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(start);
+    date.setDate(start.getDate() + index);
+    return {
+      date,
+      key: getLocalDateKey(date),
+      inMonth: date.getMonth() === first.getMonth()
+    };
+  });
+}
+
+function sortCalendarEvents(events: CalendarItem[]) {
+  return [...events].sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime());
+}
+
+function groupCalendarEventsByDay(events: CalendarItem[], timezone: string) {
+  const grouped = new Map<string, CalendarItem[]>();
+
+  for (const event of sortCalendarEvents(events)) {
+    const key = getCalendarDateKey(event.startsAt, timezone);
+    grouped.set(key, [...(grouped.get(key) ?? []), event]);
+  }
+
+  return grouped;
+}
+
+function formatCalendarDayLabel(key: string) {
+  const date = new Date(`${key}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return key;
+  return capitalizeLabel(date.toLocaleDateString("fr-BE", {
+    weekday: "long",
+    day: "numeric",
+    month: "long"
+  }));
+}
+
+function formatEventTimeRange(event: CalendarItem, timezone: string) {
+  const start = formatTime(event.startsAt, timezone);
+  if (!event.endsAt) return start;
+  return `${start}-${formatTime(event.endsAt, timezone)}`;
+}
+
+function calendarCategoryLabel(category: string) {
+  const labels: Record<string, string> = {
+    check: "Controle",
+    water: "Arrosage",
+    relocate: "Emplacement",
+    prune: "Taille",
+    fertilize: "Engrais",
+    custom: "Autre"
+  };
+  return labels[category] ?? category;
+}
+
+function capitalizeLabel(value: string) {
+  return value ? `${value.charAt(0).toUpperCase()}${value.slice(1)}` : value;
 }
 
 function formatPct(value?: number | null) {
