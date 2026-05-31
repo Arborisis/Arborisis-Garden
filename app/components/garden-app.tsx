@@ -1557,7 +1557,7 @@ export function GardenApp() {
               ))}
             </div>
             {chatThread.length > 0 && (
-              <div className="chatThread">
+              <div className="chatThread" aria-live="polite">
                 {chatThread.map((turn) => {
                   // En mode analyse, les AgentCards portent deja diagnostic/score/actions/planning :
                   // on n'affiche pas la bulle de texte brut pour eviter le doublon (le gros bloc
@@ -1565,38 +1565,50 @@ export function GardenApp() {
                   const isAnalysis = turn.role === "assistant" && turn.parsed?.mode === "analysis";
                   return (
                     <div className={`chatTurn ${turn.role}`} key={turn.id}>
-                      {!isAnalysis && (
-                        <div className="chatBubble">
-                          {turn.pending && !turn.content
-                            ? <span className="chatTyping">Arborisis reflechit…</span>
-                            : <MarkdownText text={turn.content} />}
-                        </div>
-                      )}
-                      {isAnalysis && turn.parsed && (
-                        <AgentCards parsed={turn.parsed} timezone={timezone} />
-                      )}
+                      <div className="chatAvatar" aria-hidden="true">
+                        {turn.role === "assistant" ? <Leaf size={15} /> : <MessageCircle size={15} />}
+                      </div>
+                      <div className={`chatMessage ${isAnalysis ? "analysis" : ""}`}>
+                        <div className="chatMeta">{turn.role === "assistant" ? (isAnalysis ? "Analyse Arborisis" : "Arborisis") : "Vous"}</div>
+                        {!isAnalysis && (
+                          <div className="chatBubble">
+                            {turn.pending && !turn.content
+                              ? <span className="chatTyping">Arborisis reflechit...</span>
+                              : <MarkdownText text={turn.content} />}
+                          </div>
+                        )}
+                        {isAnalysis && turn.parsed && (
+                          <AgentCards parsed={turn.parsed} timezone={timezone} />
+                        )}
+                      </div>
                     </div>
                   );
                 })}
               </div>
             )}
 
-            <textarea
-              value={message}
-              onChange={(event) => setMessage(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  void askAgent();
-                }
-              }}
-              placeholder="Discute avec l'agent, demande une analyse, un planning, une recherche espece..."
-              rows={3}
-            />
-            <button className="primaryButton agentCta" onClick={askAgent} disabled={!plant || chatBusy}>
-              <MessageCircle size={18} />
-              {chatBusy ? "Raisonnement en cours..." : "Envoyer"}
-            </button>
+            <div className="chatComposer">
+              <textarea
+                className="chatInput"
+                value={message}
+                onChange={(event) => setMessage(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void askAgent();
+                  }
+                }}
+                placeholder="Ecris a Arborisis..."
+                rows={3}
+              />
+              <div className="chatComposerFooter">
+                <span>{webSearch ? "Web actif" : "Web desactive"}</span>
+                <button className="primaryButton agentCta" onClick={askAgent} disabled={!plant || chatBusy}>
+                  <MessageCircle size={18} />
+                  {chatBusy ? "En cours..." : "Envoyer"}
+                </button>
+              </div>
+            </div>
 
             {answer && (
               <>
