@@ -121,6 +121,10 @@ model PlantPhoto {
   colorAnomalyScore Float  @default(0)
   colorAnomalyConfidence Float @default(0)
   colorFindings   String   @default("[]")
+  diseaseLabel    String?
+  diseaseConfidence Float  @default(0)
+  diseaseHealthy  Boolean?
+  diseasePredictions String @default("[]")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   plant           Plant    @relation(fields: [plantId], references: [id])

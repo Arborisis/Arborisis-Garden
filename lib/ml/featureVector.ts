@@ -32,6 +32,7 @@ export const FEATURE_KEYS: (keyof MLFeatures)[] = [
   "photoColorAnomalyScore",
   "photoColorAnomalyConfidence",
   "photoSpotCountNorm",
+  "photoDiseaseRisk",
   "insightGoodRatio",
   "insightWatchRatio",
   "insightUrgentRatio",

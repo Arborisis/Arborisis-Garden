@@ -88,7 +88,8 @@ export async function GET(req: Request) {
       photoConfidence: features.photoConfidence,
       photoColorAnomalyScore: features.photoColorAnomalyScore,
       photoColorAnomalyConfidence: features.photoColorAnomalyConfidence,
-      photoSpotCountNorm: features.photoSpotCountNorm
+      photoSpotCountNorm: features.photoSpotCountNorm,
+      photoDiseaseRisk: features.photoDiseaseRisk
     },
     modelVersion: modelInfo ?? { version: "default", trainedAt: null, sampleCount: 0 },
     weights: mixtureWeights(activeWeights)

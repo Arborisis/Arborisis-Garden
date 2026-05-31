@@ -53,9 +53,12 @@ export function computeVisualScore(f: MLFeatures): number {
   const llmScore = f.photoHealth * 100 * llmReliability + 50 * (1 - llmReliability)
   const colorPenalty =
     (f.photoColorAnomalyScore * 38 + f.photoSpotCountNorm * 12) * colorReliability
+  // Penalite maladie CNN, ponderee par la fraicheur de la photo. 0 si modele
+  // desactive / feuillage sain -> n'affecte rien dans ce cas (retro-compatible).
+  const diseasePenalty = f.photoDiseaseRisk * 45 * f.photoFreshness
   const base = llmReliability > 0 ? llmScore : 65
 
-  return c100(base - colorPenalty)
+  return c100(base - colorPenalty - diseasePenalty)
 }
 
 export function computeLlmConsensus(f: MLFeatures): number {

@@ -12,3 +12,6 @@ __pycache__
 .DS_Store
 .playwright-mcp
 arborisis-mobile.png
+
+# Modeles ONNX (volumineux) — telecharges/heberges hors repo, voir models/README.md
+models/*.onnx

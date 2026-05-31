@@ -6,7 +6,7 @@ import {
   computeVisualScore,
   computeLlmConsensus
 } from "./scoring"
-import { toVector, standardize, identityNorm, type NormStats } from "./featureVector"
+import { toVector, standardize, identityNorm, INPUT_DIM, type NormStats } from "./featureVector"
 
 export type ExpertScores = { sensor: number; visual: number; weather: number; llm: number }
 
@@ -132,11 +132,24 @@ export function migrateWeights(raw: unknown): ModelWeights {
 
   if (obj.version === 2 && obj.experts && obj.residual) {
     const r = obj.residual as ModelWeights["residual"]
+    const kind = r.kind ?? "none"
+    // Garde-fou: si la tete residuelle a ete entrainee sur un nombre de features
+    // different (ex: ajout de photoDiseaseRisk), ses poids ne sont plus alignes.
+    // On retombe sur le melange d'experts (sur) jusqu'au prochain entrainement.
+    const storedDim = r.norm?.mean?.length ?? 0
+    const dimMismatch = kind !== "none" && storedDim !== INPUT_DIM
+    if (dimMismatch) {
+      return {
+        version: 2,
+        experts: obj.experts as ExpertLogits,
+        residual: { kind: "none", norm: { mean: [], std: [] }, range: r.range ?? 25 }
+      }
+    }
     return {
       version: 2,
       experts: obj.experts as ExpertLogits,
       residual: {
-        kind: r.kind ?? "none",
+        kind,
         norm: r.norm ?? { mean: [], std: [] },
         range: r.range ?? 25,
         w: r.w,
