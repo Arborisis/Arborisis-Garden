@@ -35,18 +35,19 @@ Le bucket Railway est privé. On charge donc le modèle via le **client S3 authe
 
 ```bash
 PLANT_DISEASE_MODEL_BUCKET_KEY="models/plant-disease-mobilenetv2.onnx"
-PLANT_DISEASE_MODEL_DIR="/data/models"   # volume persistant -> pas de re-téléchargement par déploiement
 PLANT_DISEASE_NORMALIZE="minus1_1"
+# Optionnel: PLANT_DISEASE_MODEL_DIR="/data/models" si un volume persistant existe.
+# Sinon le défaut <tmp> est re-téléchargé depuis le bucket à chaque déploiement (~9 Mo, négligeable).
 ```
 
 Upload de l'objet dans le bucket (depuis le repo, credentials injectés par Railway) :
 
 ```bash
-railway run -- node --import tsx scripts/upload-model-to-bucket.ts
+railway run --service web -- node --import tsx scripts/upload-model-to-bucket.ts
 ```
 
-Le modèle est téléchargé une fois depuis le bucket puis mis en cache localement.
-(`PLANT_DISEASE_MODEL_URL` reste possible pour un stockage HTTP public.)
+Le modèle est téléchargé une fois depuis le bucket puis mis en cache localement
+pour la durée de vie du process. (`PLANT_DISEASE_MODEL_URL` reste possible pour un stockage HTTP public.)
 
 ## Réglages de prétraitement
 
