@@ -111,6 +111,35 @@ export async function getPlantPhotoObject(objectKey: string) {
   };
 }
 
+/** Upload d'un objet arbitraire dans le bucket (ex: modele ONNX). */
+export async function uploadBucketObject(input: {
+  objectKey: string;
+  bytes: Buffer;
+  contentType?: string;
+}) {
+  const { client, bucketName } = getS3Client();
+  await client.send(new PutObjectCommand({
+    Bucket: bucketName,
+    Key: input.objectKey,
+    Body: input.bytes,
+    ContentType: input.contentType ?? "application/octet-stream",
+    CacheControl: "public, max-age=31536000, immutable"
+  }));
+}
+
+/** Telecharge un objet arbitraire du bucket (ex: modele ONNX) via le client S3. */
+export async function downloadBucketObject(objectKey: string): Promise<Buffer> {
+  const { client, bucketName } = getS3Client();
+  const object = await client.send(new GetObjectCommand({
+    Bucket: bucketName,
+    Key: objectKey
+  }));
+  if (!object.Body) {
+    throw new Error(`Objet introuvable dans le bucket: ${objectKey}`);
+  }
+  return Buffer.from(await object.Body.transformToByteArray());
+}
+
 export async function deletePlantPhotoObject(objectKey: string) {
   const { client, bucketName } = getS3Client();
   await client.send(new DeleteObjectCommand({

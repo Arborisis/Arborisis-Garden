@@ -1,4 +1,5 @@
 import type { ColorAnomalyReport } from "./ml/colorAnomaly";
+import type { DiseaseReport } from "./ml/diseaseClassifier";
 
 type ChatMessage = {
   role: "system" | "user" | "assistant";
@@ -133,6 +134,59 @@ function mergeColorReportIntoAnalysis(
   };
 }
 
+function diseaseObservation(report: DiseaseReport): string {
+  if (!report.available || !report.predictions.length) return "";
+  const top = report.predictions[0];
+  const others = report.predictions
+    .slice(1, 3)
+    .map((prediction) => `${prediction.label} ${Math.round(prediction.probability * 100)}%`)
+    .join(", ");
+  return (
+    `Modele maladies (CNN): ${top.label} ${Math.round(top.probability * 100)}%` +
+    (others ? ` (autres pistes: ${others})` : "") +
+    `; probabilite globale de maladie ${Math.round(report.diseaseConfidence * 100)}%.`
+  );
+}
+
+function mergeDiseaseReportIntoAnalysis(
+  analysis: PlantPhotoAnalysis,
+  report?: DiseaseReport
+): PlantPhotoAnalysis {
+  if (!report?.available || !report.predictions.length) return analysis;
+
+  const observation = diseaseObservation(report);
+  const top = report.predictions[0];
+  // On promeut la prediction maladie en score d'anomalie quand le feuillage n'est pas sain.
+  const diseaseAnomaly = top.healthy ? 0 : report.diseaseConfidence;
+  return {
+    ...analysis,
+    observations: uniqueStrings([
+      ...(observation ? [observation] : []),
+      ...analysis.observations
+    ]).slice(0, 8),
+    colorAnomalyScore: Math.max(analysis.colorAnomalyScore, diseaseAnomaly)
+  };
+}
+
+function formatDiseaseReportForPrompt(report?: DiseaseReport) {
+  if (!report?.available || !report.predictions.length) return "";
+
+  const lines = [
+    "Pre-analyse modele maladies (classifieur CNN ONNX, PlantVillage):",
+    `- probabilite_globale_maladie: ${report.diseaseConfidence.toFixed(2)}`
+  ];
+  for (const prediction of report.predictions.slice(0, 3)) {
+    lines.push(
+      `- ${prediction.label} (${prediction.raw}): ${prediction.probability.toFixed(2)}${prediction.healthy ? " [sain]" : ""}`
+    );
+  }
+  lines.push(
+    "Ces classes proviennent d'un dataset limite (PlantVillage) et peuvent ne pas correspondre a l'espece reelle. " +
+    "Traite-les comme une hypothese a confirmer sur les images, pas comme un diagnostic certain."
+  );
+  return lines.join("\n");
+}
+
 function formatColorReportForPrompt(report?: ColorAnomalyReport) {
   if (!report) return "";
 
@@ -235,6 +289,7 @@ export async function analyzePlantPhotoWithOpenRouter(input: {
   plantContext: string;
   title?: string;
   colorAnomalyReport?: ColorAnomalyReport;
+  diseaseReport?: DiseaseReport;
 }): Promise<PlantPhotoAnalysis> {
   const imageDataUrls = input.imageDataUrls?.length
     ? input.imageDataUrls
@@ -248,17 +303,21 @@ export async function analyzePlantPhotoWithOpenRouter(input: {
 
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
-    return mergeColorReportIntoAnalysis({
-      summary: input.colorAnomalyReport?.findings.length
-        ? `Analyse IA indisponible: OPENROUTER_API_KEY n'est pas configure. ${input.colorAnomalyReport.summary}`
-        : "Analyse IA indisponible: OPENROUTER_API_KEY n'est pas configure.",
-      observations: input.colorAnomalyReport?.findings.length ? [colorObservation(input.colorAnomalyReport)] : [],
-      recommendations: ["Configurer OPENROUTER_API_KEY pour activer l'analyse photo par OpenRouter."],
-      visualTags: input.colorAnomalyReport?.tags ?? [],
-      colorAnomalyScore: input.colorAnomalyReport?.anomalyScore ?? 0,
-      healthScore: null,
-      confidence: 0
-    }, input.colorAnomalyReport);
+    const diseaseHint = input.diseaseReport?.available ? ` ${input.diseaseReport.summary}` : "";
+    return mergeDiseaseReportIntoAnalysis(
+      mergeColorReportIntoAnalysis({
+        summary: input.colorAnomalyReport?.findings.length
+          ? `Analyse IA indisponible: OPENROUTER_API_KEY n'est pas configure. ${input.colorAnomalyReport.summary}${diseaseHint}`
+          : `Analyse IA indisponible: OPENROUTER_API_KEY n'est pas configure.${diseaseHint}`,
+        observations: input.colorAnomalyReport?.findings.length ? [colorObservation(input.colorAnomalyReport)] : [],
+        recommendations: ["Configurer OPENROUTER_API_KEY pour activer l'analyse photo par OpenRouter."],
+        visualTags: input.colorAnomalyReport?.tags ?? [],
+        colorAnomalyScore: input.colorAnomalyReport?.anomalyScore ?? 0,
+        healthScore: null,
+        confidence: 0
+      }, input.colorAnomalyReport),
+      input.diseaseReport
+    );
   }
 
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -292,6 +351,7 @@ export async function analyzePlantPhotoWithOpenRouter(input: {
                 `Nombre de vues: ${imageDataUrls.length}\n` +
                 `${input.plantContext}\n\n` +
                 `${formatColorReportForPrompt(input.colorAnomalyReport)}\n\n` +
+                `${formatDiseaseReportForPrompt(input.diseaseReport)}\n\n` +
                 "Analyse les signes visibles sur toutes les vues: feuilles, couleur, taches, port, substrat visible, stress hydrique/lumiere, coherence entre angles, et donne des actions concretes."
             },
             ...imageDataUrls.flatMap((imageDataUrl, index) => [
@@ -317,8 +377,11 @@ export async function analyzePlantPhotoWithOpenRouter(input: {
 
   const json = await response.json();
   const content = json.choices?.[0]?.message?.content;
-  return mergeColorReportIntoAnalysis(
-    parsePhotoAnalysis(typeof content === "string" ? content : JSON.stringify(content ?? "")),
-    input.colorAnomalyReport
+  return mergeDiseaseReportIntoAnalysis(
+    mergeColorReportIntoAnalysis(
+      parsePhotoAnalysis(typeof content === "string" ? content : JSON.stringify(content ?? "")),
+      input.colorAnomalyReport
+    ),
+    input.diseaseReport
   );
 }

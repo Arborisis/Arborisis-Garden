@@ -128,6 +128,12 @@ export function extractFeatures(
   const photoColorAnomalyScore = clamp(latestAnyPhoto?.colorAnomalyScore ?? 0)
   const photoColorAnomalyConfidence = clamp(latestAnyPhoto?.colorAnomalyConfidence ?? 0)
   const photoSpotCountNorm = clamp(parseJsonStringArray(latestAnyPhoto?.colorTags).length / 6)
+  // Risque maladie du classifieur CNN (ONNX): probabilite cumulee de maladie de la
+  // derniere photo, uniquement si le modele a juge le feuillage non sain. 0 sinon
+  // (feuillage sain, modele desactive, ou pas de photo) -> retro-compatible.
+  const photoDiseaseRisk = latestAnyPhoto?.diseaseHealthy === false
+    ? clamp(latestAnyPhoto.diseaseConfidence ?? 0)
+    : 0
 
   // ---- LLM Insights ----
   const total = insights.length
@@ -168,6 +174,7 @@ export function extractFeatures(
     photoColorAnomalyScore,
     photoColorAnomalyConfidence,
     photoSpotCountNorm,
+    photoDiseaseRisk,
     insightGoodRatio,
     insightWatchRatio,
     insightUrgentRatio,

@@ -116,6 +116,10 @@ type PlantPhoto = {
   colorAnomalyScore: number;
   colorAnomalyConfidence: number;
   colorFindings: unknown[];
+  diseaseLabel: string | null;
+  diseaseConfidence: number;
+  diseaseHealthy: boolean | null;
+  diseasePredictions: { label: string; probability: number; healthy: boolean }[];
   createdAt: string;
   updatedAt: string;
 };
@@ -1482,6 +1486,13 @@ export function GardenApp() {
                           ))}
                           <span className="photoTag score">
                             {Math.round(photo.colorAnomalyScore * 100)}%
+                          </span>
+                        </div>
+                      )}
+                      {photo.diseaseLabel && photo.diseaseHealthy === false && (
+                        <div className="photoTags" aria-label="Modele maladies">
+                          <span className="photoTag score" title="Classification CNN (modele ONNX)">
+                            🔬 {photo.diseaseLabel} · {Math.round(photo.diseaseConfidence * 100)}%
                           </span>
                         </div>
                       )}

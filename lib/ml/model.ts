@@ -75,6 +75,10 @@ export function predict(
     dominantSignals.unshift('Taches couleur')
     dominantSignals.splice(3)
   }
+  if (features.photoDiseaseRisk * features.photoFreshness >= 0.35) {
+    dominantSignals.unshift('Maladie détectée (CNN)')
+    dominantSignals.splice(3)
+  }
 
   return {
     healthScore: Math.round(healthScore),

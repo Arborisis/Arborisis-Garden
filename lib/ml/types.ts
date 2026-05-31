@@ -26,6 +26,7 @@ export type MLFeatures = {
   photoColorAnomalyScore: number  // 0-1 local strange-color detector score
   photoColorAnomalyConfidence: number
   photoSpotCountNorm: number      // suspicious color tags / 6
+  photoDiseaseRisk: number        // 0-1 CNN (ONNX) disease probability; 0 when healthy/unavailable
 
   // LLM insights cluster (0.5/0.3/0 priors when no insights)
   insightGoodRatio: number

@@ -16,6 +16,11 @@ import {
   emptyColorAnomalyReport,
   mergeColorAnomalyReports
 } from "@/lib/ml/colorAnomaly";
+import {
+  classifyPlantDisease,
+  emptyDiseaseReport,
+  mergeDiseaseReports
+} from "@/lib/ml/diseaseClassifier";
 
 export const runtime = "nodejs";
 
@@ -51,6 +56,10 @@ function serializePhoto(photo: {
   colorAnomalyScore: number;
   colorAnomalyConfidence: number;
   colorFindings: string;
+  diseaseLabel: string | null;
+  diseaseConfidence: number;
+  diseaseHealthy: boolean | null;
+  diseasePredictions: string;
   createdAt: Date;
   updatedAt: Date;
 }) {
@@ -60,7 +69,8 @@ function serializePhoto(photo: {
     observations: parseJsonArray(photo.observations),
     recommendations: parseJsonArray(photo.recommendations),
     colorTags: parseJsonArray(photo.colorTags),
-    colorFindings: parseJsonValue(photo.colorFindings, [])
+    colorFindings: parseJsonValue(photo.colorFindings, []),
+    diseasePredictions: parseJsonValue(photo.diseasePredictions, [])
   };
 }
 
@@ -170,14 +180,15 @@ export async function POST(request: NextRequest) {
       bytes: image.bytes
     };
   });
-  const preparedImages = await Promise.all(preparedImageInputs.map(async (image, index) => ({
-    ...image,
-    colorReport: await analyzePlantColorAnomalies({
-      bytes: image.bytes,
-      view: `Vue ${index + 1}`
-    }).catch(() => emptyColorAnomalyReport())
-  })));
+  const preparedImages = await Promise.all(preparedImageInputs.map(async (image, index) => {
+    const [colorReport, diseaseReport] = await Promise.all([
+      analyzePlantColorAnomalies({ bytes: image.bytes, view: `Vue ${index + 1}` }).catch(() => emptyColorAnomalyReport()),
+      classifyPlantDisease({ bytes: image.bytes }).catch(() => emptyDiseaseReport())
+    ]);
+    return { ...image, colorReport, diseaseReport };
+  }));
   const colorAnomalyReport = mergeColorAnomalyReports(preparedImages.map((image) => image.colorReport));
+  const diseaseReport = mergeDiseaseReports(preparedImages.map((image) => image.diseaseReport));
 
   const uploadedObjectKeys: string[] = [];
   try {
@@ -209,7 +220,8 @@ export async function POST(request: NextRequest) {
     imageDataUrls: preparedImages.map((image) => image.imageDataUrl),
     plantContext,
     title: preparedImages.length > 1 ? `${batchTitle} (${preparedImages.length} vues)` : batchTitle,
-    colorAnomalyReport
+    colorAnomalyReport,
+    diseaseReport
   }).catch((error) => ({
     summary: error instanceof Error ? error.message : "Analyse photo indisponible.",
     observations: colorAnomalyReport.findings.length ? [colorAnomalyReport.summary] : [],
@@ -237,7 +249,11 @@ export async function POST(request: NextRequest) {
         colorTags: JSON.stringify(image.colorReport.tags),
         colorAnomalyScore: image.colorReport.anomalyScore,
         colorAnomalyConfidence: image.colorReport.confidence,
-        colorFindings: JSON.stringify(image.colorReport.findings)
+        colorFindings: JSON.stringify(image.colorReport.findings),
+        diseaseLabel: image.diseaseReport.available ? image.diseaseReport.topLabel : null,
+        diseaseConfidence: image.diseaseReport.diseaseConfidence,
+        diseaseHealthy: image.diseaseReport.healthy,
+        diseasePredictions: JSON.stringify(image.diseaseReport.predictions)
       }
     }))
   ).catch(async (error) => {

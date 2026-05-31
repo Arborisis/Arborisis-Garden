@@ -206,7 +206,11 @@ async function generateInsightsWithOpenRouter(plant: PlantWithReadings, weather?
     throw new Error("OpenRouter n'a pas retourne de contenu pour les insights");
   }
 
-  return insightsPayloadSchema.parse(JSON.parse(extractJson(content))).insights;
+  try {
+    return insightsPayloadSchema.parse(JSON.parse(extractJson(content))).insights;
+  } catch (err) {
+    throw new Error(`Reponse OpenRouter invalide: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 export async function getCachedInsights(prisma: PrismaClient, plantId: string): Promise<AiInsight[]> {
