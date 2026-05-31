@@ -1,9 +1,33 @@
 import { prisma } from "@/lib/prisma";
 import { runAgenticLoop, buildStreamingResponse } from "@/lib/agentic/orchestrator";
+import { compactConversation } from "@/lib/agentic/memory";
 import { chatSchema } from "@/lib/schemas";
 import { getWeatherContext } from "@/lib/weather";
 
 export const runtime = "nodejs";
+
+// GET /api/chat?plantId=... -> historique du fil pour hydrater l'UI au chargement.
+export async function GET(request: Request) {
+  const plantId = new URL(request.url).searchParams.get("plantId");
+  if (!plantId) {
+    return Response.json({ error: "plantId requis" }, { status: 400 });
+  }
+
+  const messages = await prisma.chatMessage.findMany({
+    where: { plantId },
+    orderBy: { createdAt: "asc" },
+    take: 60
+  });
+
+  return Response.json({
+    messages: messages.map((m) => ({
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      createdAt: m.createdAt.toISOString()
+    }))
+  });
+}
 
 export async function POST(request: Request) {
   const { plantId, message, webSearch, weatherLocation, timezone } = chatSchema.parse(await request.json());
@@ -16,7 +40,7 @@ export async function POST(request: Request) {
     prisma.reading.findMany({ where: { plantId }, orderBy: { recordedAt: "desc" }, take: 16 }),
     prisma.alert.findMany({ where: { plantId, status: "open" }, orderBy: { createdAt: "desc" }, take: 10 }),
     prisma.memory.findMany({ where: { plantId }, orderBy: { createdAt: "desc" }, take: 15 }),
-    prisma.chatMessage.findMany({ where: { plantId }, orderBy: { createdAt: "desc" }, take: 8 }),
+    prisma.chatMessage.findMany({ where: { plantId }, orderBy: { createdAt: "desc" }, take: 30 }),
     prisma.plantPhoto.findMany({ where: { plantId }, orderBy: { createdAt: "desc" }, take: 8 }),
     prisma.calendarEvent.findMany({
       where: { plantId, startsAt: { gte: from, lte: to } },
@@ -33,11 +57,17 @@ export async function POST(request: Request) {
   // and does not 524-timeout while waiting for the agentic loop to complete.
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (text: string) => controller.enqueue(encoder.encode(text));
+      const send = (text: string) => { try { controller.enqueue(encoder.encode(text)); } catch { /* client disconnected */ } };
 
       // Send an initial newline so the TCP connection is fully established and
       // Cloudflare's read-timeout clock resets before the slow AI calls begin.
       send("\n");
+
+      // Periodic keepalive to prevent proxy idle-timeout during long AI calls
+      // (Railway/Cloudflare can cut connections after ~100s of silence).
+      const keepalive = setInterval(() => {
+        try { send(" "); } catch { /* stream already closed */ }
+      }, 20000);
 
       try {
         const weather = await getWeatherContext({
@@ -63,16 +93,39 @@ export async function POST(request: Request) {
         });
 
         send(responseText);
+
+        // Auto-compaction du fil de conversation (best-effort, ne bloque pas la reponse).
+        try {
+          const allMessages = await prisma.chatMessage.findMany({
+            where: { plantId },
+            orderBy: { createdAt: "desc" },
+            take: 60
+          });
+          const compacted = await compactConversation(plant, allMessages);
+          if (compacted) {
+            await prisma.plant.update({
+              where: { id: plantId },
+              data: {
+                conversationSummary: compacted.conversationSummary,
+                lastCompactedAt: compacted.lastCompactedAt
+              }
+            });
+          }
+        } catch { /* compaction best-effort */ }
       } catch (error) {
         const msg = error instanceof Error ? error.message : "Erreur inconnue de l'agent";
+        // Don't persist stream/connection errors — they happen when the client disconnects
+        const isStreamError = msg.toLowerCase().includes("controller") || msg.toLowerCase().includes("closed");
 
-        await prisma.chatMessage.create({
-          data: { plantId, role: "assistant", content: `Erreur: ${msg}` }
-        }).catch(() => {});
-
-        send(`Erreur agentique: ${msg}`);
+        if (!isStreamError) {
+          await prisma.chatMessage.create({
+            data: { plantId, role: "assistant", content: `Erreur: ${msg}` }
+          }).catch(() => {});
+          send(`Erreur agentique: ${msg}`);
+        }
       } finally {
-        controller.close();
+        clearInterval(keepalive);
+        try { controller.close(); } catch { /* already closed by client disconnect */ }
       }
     }
   });
