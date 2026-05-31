@@ -6,8 +6,8 @@ export const INSIGHTS_CACHE_KIND = "ai_insights_cache";
 export const INSIGHTS_CACHE_TTL_MS = 4 * 60 * 60 * 1000;
 
 const insightSchema = z.object({
-  title: z.string().min(1).max(80),
-  body: z.string().min(1).max(260),
+  title: z.string().trim().min(1).max(120),
+  body: z.string().trim().min(1).max(700),
   tone: z.enum(["good", "watch", "urgent"])
 });
 
@@ -58,17 +58,76 @@ function parseCache(content: string, weatherKey: string | null): InsightCachePay
   }
 }
 
-function extractJson(content: string) {
-  const block = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-  if (block?.[1]) return block[1].trim();
+function extractBalancedJsonObjects(text: string) {
+  const objects: string[] = [];
 
-  const firstBrace = content.indexOf("{");
-  const lastBrace = content.lastIndexOf("}");
-  if (firstBrace >= 0 && lastBrace > firstBrace) {
-    return content.slice(firstBrace, lastBrace + 1);
+  for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let index = start; index < text.length; index += 1) {
+      const char = text[index];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === "\\") {
+          escaped = true;
+        } else if (char === "\"") {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (char === "\"") {
+        inString = true;
+      } else if (char === "{") {
+        depth += 1;
+      } else if (char === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          objects.push(text.slice(start, index + 1));
+          break;
+        }
+      }
+    }
   }
 
-  return content;
+  return objects;
+}
+
+function parseJsonCandidate(candidate: string) {
+  const parsed = JSON.parse(candidate.trim()) as unknown;
+  return Array.isArray(parsed) ? { insights: parsed } : parsed;
+}
+
+export function parseAiInsightsResponse(content: string): AiInsight[] {
+  const fencedBlocks = [...content.matchAll(/```(?:json)?\s*([\s\S]*?)(?:```|$)/gi)]
+    .map((match) => match[1]?.trim())
+    .filter((block): block is string => Boolean(block));
+
+  const candidates = [
+    ...fencedBlocks,
+    ...fencedBlocks.flatMap(extractBalancedJsonObjects),
+    ...extractBalancedJsonObjects(content),
+    content
+  ];
+  const seen = new Set<string>();
+
+  for (const candidate of candidates) {
+    const trimmed = candidate.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+
+    try {
+      return insightsPayloadSchema.parse(parseJsonCandidate(trimmed)).insights;
+    } catch {
+      continue;
+    }
+  }
+
+  throw new Error("Aucun objet JSON d'insights valide trouve dans la reponse OpenRouter");
 }
 
 function summarizeReading(reading: Reading) {
@@ -207,7 +266,7 @@ async function generateInsightsWithOpenRouter(plant: PlantWithReadings, weather?
   }
 
   try {
-    return insightsPayloadSchema.parse(JSON.parse(extractJson(content))).insights;
+    return parseAiInsightsResponse(content);
   } catch (err) {
     throw new Error(`Reponse OpenRouter invalide: ${err instanceof Error ? err.message : String(err)}`);
   }

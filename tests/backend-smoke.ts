@@ -1,5 +1,6 @@
 import { telemetrySchema } from "../lib/schemas";
 import { evaluateReading } from "../lib/rules";
+import { parseAiInsightsResponse } from "../lib/insights";
 
 const payload = telemetrySchema.parse({
   deviceSerial: "pico-test",
@@ -52,6 +53,37 @@ const alerts = evaluateReading(
 
 if (alerts.length < 2) {
   throw new Error(`Expected moisture and light alerts, got ${alerts.length}`);
+}
+
+const openRouterInsights = parseAiInsightsResponse(`\`\`\`json
+{
+  "insights": [
+    {
+      "title": "Lumi\\u00e8re critique \\u2014 action imm\\u00e9diate",
+      "body": "87 lux mesur\\u00e9s ce matin, soit 3 fois sous le minimum requis (250 lux). Le ciel couvert \\u00e0 Bruxelles aggrave la situation. D\\u00e9placez la plante d\\u00e8s aujourd'hui pr\\u00e8s d'une fen\\u00eatre sud ou ouest, \\u00e0 moins de 50 cm de la vitre. Cible : d\\u00e9passer 250 lux en journ\\u00e9e, id\\u00e9alement 500 lux.",
+      "tone": "urgent"
+    },
+    {
+      "title": "Humidit\\u00e9 sol parfaite",
+      "body": "47,8 \\u00e0 48,3 % sur toutes les mesures, exactement sur la cible de 48 %. Temp\\u00e9rature sol stable \\u00e0 24 \\u00b0C. Aucun arrosage n\\u00e9cessaire aujourd'hui. Prochain contr\\u00f4le recommand\\u00e9 dans 2 \\u00e0 3 jours.",
+      "tone": "good"
+    },
+    {
+      "title": "Fertilisation \\u00e0 initier le 02/06",
+      "body": "Aucun apport nutritionnel jamais document\\u00e9. Les jaunissements des feuilles int\\u00e9rieures pointent vers une carence probable. Pr\\u00e9parez un engrais liquide \\u00e9quilibr\\u00e9 (NPK 3-1-2) \\u00e0 demi-dose pour le 02/06. Arrosez le substrat avant application pour \\u00e9viter les br\\u00fblures racinaires.",
+      "tone": "watch"
+    },
+    {
+      "title": "Rempotage \\u00e0 \\u00e9valuer le 06/06",
+      "body": "Plante dense signal\\u00e9e. V\\u00e9rifiez le 06/06 si les racines sortent par le drainage ou si le substrat s\\u00e8che trop vite (moins de 3 jours pour passer de 48 % \\u00e0 35 %). Si oui, rempotez dans un pot 2 cm plus large avec un substrat frais drainant.",
+      "tone": "watch"
+    }
+  ]
+}
+\`\`\``);
+
+if (openRouterInsights.length !== 4 || openRouterInsights[0].tone !== "urgent") {
+  throw new Error("Expected fenced OpenRouter insights payload to parse");
 }
 
 console.log("backend smoke ok");
