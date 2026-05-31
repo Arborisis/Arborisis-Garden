@@ -1547,18 +1547,26 @@ export function GardenApp() {
             </div>
             {chatThread.length > 0 && (
               <div className="chatThread">
-                {chatThread.map((turn) => (
-                  <div className={`chatTurn ${turn.role}`} key={turn.id}>
-                    <div className="chatBubble">
-                      {turn.pending && !turn.content
-                        ? <span className="chatTyping">Arborisis reflechit…</span>
-                        : <MarkdownText text={turn.content} />}
+                {chatThread.map((turn) => {
+                  // En mode analyse, les AgentCards portent deja diagnostic/score/actions/planning :
+                  // on n'affiche pas la bulle de texte brut pour eviter le doublon (le gros bloc
+                  // de planning qui reapparaissait apres rechargement du fil).
+                  const isAnalysis = turn.role === "assistant" && turn.parsed?.mode === "analysis";
+                  return (
+                    <div className={`chatTurn ${turn.role}`} key={turn.id}>
+                      {!isAnalysis && (
+                        <div className="chatBubble">
+                          {turn.pending && !turn.content
+                            ? <span className="chatTyping">Arborisis reflechit…</span>
+                            : <MarkdownText text={turn.content} />}
+                        </div>
+                      )}
+                      {isAnalysis && turn.parsed && (
+                        <AgentCards parsed={turn.parsed} timezone={timezone} />
+                      )}
                     </div>
-                    {turn.role === "assistant" && turn.parsed?.mode === "analysis" && (
-                      <AgentCards parsed={turn.parsed} timezone={timezone} />
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 
