@@ -1,11 +1,13 @@
+import gc
 import json
 import socket
+import sys
 import time
 import ubinascii
 
 import machine
 import network
-from machine import ADC, I2C, Pin
+from machine import ADC, I2C, Pin, WDT
 
 import config
 from drivers.bme280 import BME280
@@ -26,6 +28,7 @@ except ImportError:
 
 class ArborisisPico:
     def __init__(self):
+        self.boot_ms = time.ticks_ms()
         self.device_serial = ubinascii.hexlify(machine.unique_id()).decode()
         self.device_name = "{}-{}".format(config.DEVICE_NAME_PREFIX, self.device_serial[-6:])
         self.settings = self.load_config()
@@ -47,12 +50,61 @@ class ArborisisPico:
         self.light = self.safe_sensor("TSL2561", lambda: TSL2561(self.light_i2c))
         self.ds = None
         self.ds_roms = []
+        if onewire and ds18x20:
+            try:
+                self.ds = ds18x20.DS18X20(onewire.OneWire(Pin(config.SOIL_TEMP_ONEWIRE_PIN)))
+                self.ds_roms = self.ds.scan()
+                print("DS18B20 sensors:", len(self.ds_roms))
+            except Exception as exc:
+                print("DS18B20 disabled:", exc)
+                self.ds = None
+        self.led = self.init_led()
         self.web_server = None
         self.latest_payload = {}
-        if onewire and ds18x20:
-            self.ds = ds18x20.DS18X20(onewire.OneWire(Pin(config.SOIL_TEMP_ONEWIRE_PIN)))
-            self.ds_roms = self.ds.scan()
+        self.queue = []            # readings buffered while offline (oldest first).
+        self.dropped_count = 0
+        self.post_ok_count = 0
+        self.post_fail_count = 0
+        self.last_post = "never"
+        self.time_synced = False
+        self.last_sync_ms = None
+        self.wifi_backoff = config.WIFI_BACKOFF_START
         self.wlan = network.WLAN(network.STA_IF)
+        self.wdt = None  # armed in run(), after the slow sensor probing above.
+
+    # -- infrastructure helpers ------------------------------------------------
+
+    def init_led(self):
+        try:
+            return Pin(config.STATUS_LED_PIN, Pin.OUT)
+        except Exception:
+            return None
+
+    def led_set(self, on):
+        if self.led:
+            try:
+                self.led.value(1 if on else 0)
+            except Exception:
+                pass
+
+    def feed(self):
+        if self.wdt:
+            self.wdt.feed()
+
+    def sleep(self, seconds):
+        # WDT-safe sleep: feed the watchdog while we wait.
+        end = time.ticks_add(time.ticks_ms(), int(seconds * 1000))
+        while time.ticks_diff(end, time.ticks_ms()) > 0:
+            self.feed()
+            time.sleep_ms(200)
+
+    def heartbeat(self):
+        # Two short blinks signal a healthy completed cycle.
+        for _ in range(2):
+            self.led_set(True)
+            time.sleep_ms(40)
+            self.led_set(False)
+            time.sleep_ms(80)
 
     def safe_sensor(self, label, factory):
         try:
@@ -76,6 +128,16 @@ class ArborisisPico:
         with open(config.CONFIG_FILE, "w") as handle:
             json.dump(self.settings, handle)
 
+    # -- sensor reads ----------------------------------------------------------
+
+    def read_adc_median(self, adc, samples):
+        readings = []
+        for _ in range(max(1, samples)):
+            readings.append(adc.read_u16())
+            time.sleep_ms(3)
+        readings.sort()
+        return readings[len(readings) // 2]
+
     def moisture_percent(self, raw):
         dry = int(self.settings.get("moisture_dry_raw", config.DEFAULT_CONFIG["moisture_dry_raw"]))
         wet = int(self.settings.get("moisture_wet_raw", config.DEFAULT_CONFIG["moisture_wet_raw"]))
@@ -87,17 +149,36 @@ class ArborisisPico:
     def read_soil_temp(self):
         if not self.ds or not self.ds_roms:
             return None
-        self.ds.convert_temp()
-        time.sleep_ms(760)
-        return self.ds.read_temp(self.ds_roms[0])
+        try:
+            self.ds.convert_temp()
+            time.sleep_ms(760)
+            value = self.ds.read_temp(self.ds_roms[0])
+            # 85.0 is the DS18B20 power-on default → treat as a failed read.
+            if value is None or value == 85.0 or value < -40 or value > 85:
+                return None
+            return value
+        except Exception as exc:
+            print("Soil temp read failed:", exc)
+            return None
 
     def read_battery_mv(self):
         if not self.battery_adc:
             return None
-        return int(self.battery_adc.read_u16() * 3300 / 65535)
+        raw = self.read_adc_median(self.battery_adc, config.BATTERY_SAMPLES)
+        return int(raw * 3300 / 65535 * config.BATTERY_DIVIDER)
+
+    def battery_percent(self, mv):
+        if mv is None:
+            return None
+        span = config.BATTERY_FULL_MV - config.BATTERY_EMPTY_MV
+        if span <= 0:
+            return None
+        pct = (mv - config.BATTERY_EMPTY_MV) * 100 / span
+        return int(max(0, min(100, pct)))
 
     def read_payload(self):
-        raw = self.adc.read_u16()
+        raw = self.read_adc_median(self.adc, config.MOISTURE_SAMPLES)
+        battery_mv = self.read_battery_mv()
         payload = {
             "deviceSerial": self.device_serial,
             "deviceName": self.device_name,
@@ -105,49 +186,155 @@ class ArborisisPico:
             "soilMoistureRaw": raw,
             "soilMoisturePct": self.moisture_percent(raw),
             "soilTempC": self.read_soil_temp(),
-            "batteryMv": self.read_battery_mv()
+            "batteryMv": battery_mv
         }
+        recorded_at = self.iso_timestamp()
+        if recorded_at:
+            payload["recordedAt"] = recorded_at
         if self.wlan.active() and self.wlan.isconnected():
             payload["wifiRssi"] = self.wlan.status("rssi")
         if self.bme:
-            payload.update(self.bme.read())
+            try:
+                payload.update(self.bme.read())
+            except Exception as exc:
+                print("BME280 read failed:", exc)
         if self.light:
-            payload["lightLux"] = self.light.read_lux()
+            try:
+                payload["lightLux"] = self.light.read_lux()
+            except Exception as exc:
+                print("TSL2561 read failed:", exc)
+        # Keep local-only extras for the dashboard, off the telemetry payload.
+        self.battery_pct = self.battery_percent(battery_mv)
         return {key: value for key, value in payload.items() if value is not None}
+
+    # -- time ------------------------------------------------------------------
+
+    def iso_timestamp(self):
+        if not self.time_synced:
+            return None
+        y, mo, d, h, mi, s, _, _ = time.gmtime()
+        return "{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}Z".format(y, mo, d, h, mi, s)
+
+    def sync_time(self, force=False):
+        if not self.wlan.isconnected():
+            return
+        if not force and self.time_synced and self.last_sync_ms is not None:
+            if time.ticks_diff(time.ticks_ms(), self.last_sync_ms) < config.NTP_RESYNC_SECONDS * 1000:
+                return
+        try:
+            import ntptime
+            ntptime.host = config.NTP_HOST
+            self.feed()
+            ntptime.settime()
+            self.time_synced = True
+            self.last_sync_ms = time.ticks_ms()
+            print("Time synced:", self.iso_timestamp())
+        except Exception as exc:
+            print("NTP sync failed:", exc)
+
+    # -- networking ------------------------------------------------------------
 
     def connect_wifi(self):
         ssid = self.settings.get("ssid", "")
         if not ssid:
             return False
+        try:
+            network.country(config.COUNTRY)
+        except Exception:
+            pass
         self.wlan.active(True)
         if not self.wlan.isconnected():
             print("Connecting Wi-Fi:", ssid)
-            self.wlan.connect(ssid, self.settings.get("password", ""))
-            deadline = time.time() + 18
-            while time.time() < deadline and not self.wlan.isconnected():
-                time.sleep(1)
-        print("Wi-Fi:", self.wlan.ifconfig() if self.wlan.isconnected() else "offline")
-        return self.wlan.isconnected()
+            try:
+                self.wlan.connect(ssid, self.settings.get("password", ""))
+            except Exception as exc:
+                print("Wi-Fi connect error:", exc)
+            deadline = time.ticks_add(time.ticks_ms(), config.WIFI_CONNECT_TIMEOUT * 1000)
+            while time.ticks_diff(deadline, time.ticks_ms()) > 0 and not self.wlan.isconnected():
+                self.feed()
+                self.led_set(True)
+                time.sleep_ms(250)
+                self.led_set(False)
+                time.sleep_ms(250)
+        connected = self.wlan.isconnected()
+        if connected:
+            print("Wi-Fi:", self.wlan.ifconfig())
+            self.wifi_backoff = config.WIFI_BACKOFF_START
+            self.sync_time()
+        else:
+            print("Wi-Fi: offline")
+        return connected
+
+    def ensure_wifi(self):
+        # Reconnect with capped exponential backoff so we never busy-loop.
+        if self.wlan.isconnected():
+            return True
+        self.sleep(self.wifi_backoff)
+        connected = self.connect_wifi()
+        if not connected:
+            self.wifi_backoff = min(self.wifi_backoff * 2, config.WIFI_BACKOFF_MAX)
+        return connected
 
     def post_payload(self, payload):
+        # Returns "ok" (stored), "drop" (rejected, discard) or "retry" (buffer).
         if requests is None:
             print("urequests missing")
-            return False
+            return "retry"
         headers = {
             "Content-Type": "application/json",
             "X-Device-Token": self.settings.get("device_token", "")
         }
+        url = self.settings.get("api_url", "")
+        if not url:
+            return "drop"
+        response = None
         try:
-            response = requests.post(self.settings["api_url"], data=json.dumps(payload), headers=headers)
-            print("POST", response.status_code, response.text[:120])
-            response.close()
-            return 200 <= response.status_code < 300
+            self.feed()
+            response = requests.post(url, data=json.dumps(payload), headers=headers)
+            status = response.status_code
+            print("POST", status, response.text[:120])
+            self.last_post = "HTTP {}".format(status)
+            if 200 <= status < 300:
+                self.post_ok_count += 1
+                return "ok"
+            self.post_fail_count += 1
+            # 4xx (bad token, validation) won't fix itself by retrying.
+            return "drop" if 400 <= status < 500 else "retry"
         except Exception as exc:
             print("POST failed:", exc)
-            return False
+            self.post_fail_count += 1
+            self.last_post = "error"
+            return "retry"
+        finally:
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:
+                    pass
+
+    def enqueue(self, payload):
+        self.queue.append(payload)
+        while len(self.queue) > config.OFFLINE_BUFFER_MAX:
+            self.queue.pop(0)
+            self.dropped_count += 1
+
+    def flush_queue(self):
+        # Drain oldest-first; stop on the first transient failure.
+        while self.queue:
+            self.feed()
+            if not self.wlan.isconnected() and not self.ensure_wifi():
+                return
+            result = self.post_payload(self.queue[0])
+            if result == "ok" or result == "drop":
+                self.queue.pop(0)
+            else:
+                self.ensure_wifi()
+                return
+
+    # -- local web server ------------------------------------------------------
 
     def start_web_server(self):
-        if self.web_server:
+        if self.web_server or not self.wlan.isconnected():
             return
         try:
             server = socket.socket()
@@ -168,7 +355,6 @@ class ArborisisPico:
             client, _ = self.web_server.accept()
         except OSError:
             return
-
         try:
             request = client.recv(2048).decode()
             path = request.split(" ", 2)[1] if request else "/"
@@ -176,6 +362,9 @@ class ArborisisPico:
                 body = json.dumps(self.latest_payload or self.read_payload())
                 client.send("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n\r\n")
                 client.send(body)
+            elif path.startswith("/api/diagnostics"):
+                client.send("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n\r\n")
+                client.send(json.dumps(self.diagnostics()))
             else:
                 body = self.dashboard_page(self.latest_payload or self.read_payload())
                 client.send("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nCache-Control: no-store\r\n\r\n")
@@ -185,6 +374,22 @@ class ArborisisPico:
         finally:
             client.close()
 
+    def diagnostics(self):
+        return {
+            "deviceSerial": self.device_serial,
+            "firmwareVersion": config.FIRMWARE_VERSION,
+            "uptimeS": time.ticks_diff(time.ticks_ms(), self.boot_ms) // 1000,
+            "freeMem": gc.mem_free(),
+            "timeSynced": self.time_synced,
+            "wifiConnected": self.wlan.isconnected(),
+            "queued": len(self.queue),
+            "dropped": self.dropped_count,
+            "postOk": self.post_ok_count,
+            "postFail": self.post_fail_count,
+            "lastPost": self.last_post,
+            "batteryPct": getattr(self, "battery_pct", None)
+        }
+
     def dashboard_page(self, payload):
         def value(key, unit=""):
             raw = payload.get(key)
@@ -193,6 +398,10 @@ class ArborisisPico:
             if isinstance(raw, float):
                 raw = round(raw, 1)
             return "{}{}".format(raw, unit)
+
+        diag = self.diagnostics()
+        uptime_min = diag["uptimeS"] // 60
+        wifi_state = "online" if diag["wifiConnected"] else "offline"
 
         return """<!doctype html><html><head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -206,61 +415,94 @@ h1{{font-size:34px;line-height:1;margin:6px 0 16px}}
 .card{{background:white;border:1px solid #dbe4df;border-radius:8px;padding:14px;min-height:86px}}
 .label{{color:#63716b;font-size:13px}} .value{{font-size:25px;font-weight:800;margin-top:8px}}
 .wide{{grid-column:1/-1}} code{{word-break:break-all}}
+.foot{{color:#63716b;font-size:12px;margin-top:14px;line-height:1.6}}
 </style></head><body><main>
-<div class="label">Arborisis Pico local</div><h1>{name}</h1>
+<div class="label">Arborisis Pico local &middot; v{version}</div><h1>{name}</h1>
 <section class="grid">
 <div class="card"><div class="label">Humidite sol</div><div class="value">{moisture}</div></div>
 <div class="card"><div class="label">Temp. sol</div><div class="value">{soil_temp}</div></div>
 <div class="card"><div class="label">Air</div><div class="value">{air_temp}</div></div>
 <div class="card"><div class="label">Humidite air</div><div class="value">{air_humidity}</div></div>
 <div class="card"><div class="label">Lumiere</div><div class="value">{light}</div></div>
+<div class="card"><div class="label">Pression</div><div class="value">{pressure}</div></div>
 <div class="card"><div class="label">Wi-Fi RSSI</div><div class="value">{rssi}</div></div>
-<div class="card wide"><div class="label">API locale</div><div><code>/api/readings</code></div></div>
-</section></main></body></html>""".format(
+<div class="card"><div class="label">Batterie</div><div class="value">{battery}</div></div>
+<div class="card wide"><div class="label">API locale</div><div><code>/api/readings</code> &middot; <code>/api/diagnostics</code></div></div>
+</section>
+<div class="foot">{wifi} &middot; uptime {uptime} min &middot; file {queued} (perdus {dropped}) &middot;
+POST ok {ok}/ko {ko} &middot; dernier {last} &middot; RAM {mem} o &middot; horloge {clock}</div>
+</main></body></html>""".format(
+            version=config.FIRMWARE_VERSION,
             name=self.device_name,
             moisture=value("soilMoisturePct", "%"),
             soil_temp=value("soilTempC", " C"),
             air_temp=value("airTempC", " C"),
             air_humidity=value("airHumidityPct", "%"),
             light=value("lightLux", " lx"),
-            rssi=value("wifiRssi", " dBm")
+            pressure=value("pressureHpa", " hPa"),
+            rssi=value("wifiRssi", " dBm"),
+            battery=("{}%".format(diag["batteryPct"]) if diag["batteryPct"] is not None else value("batteryMv", " mV")),
+            wifi=wifi_state,
+            uptime=uptime_min,
+            queued=diag["queued"],
+            dropped=diag["dropped"],
+            ok=diag["postOk"],
+            ko=diag["postFail"],
+            last=diag["lastPost"],
+            mem=diag["freeMem"],
+            clock="OK" if diag["timeSynced"] else "non sync"
         )
+
+    # -- provisioning access point ---------------------------------------------
 
     def setup_ap(self):
         try:
-            network.country("BE")
+            network.country(config.COUNTRY)
         except Exception:
             pass
         ap = network.WLAN(network.AP_IF)
         ap.active(True)
-        ap.config(essid=self.device_name, password="arborisis", channel=6)
+        ap.config(essid=self.device_name, password=config.AP_PASSWORD, channel=6)
         ap.ifconfig(("192.168.4.1", "255.255.255.0", "192.168.4.1", "8.8.8.8"))
-        time.sleep(2)
-        print("Setup AP:", self.device_name, "password arborisis", ap.ifconfig(), "active", ap.active())
+        self.sleep(2)
+        print("Setup AP:", self.device_name, "password", config.AP_PASSWORD, ap.ifconfig(), "active", ap.active())
         server = socket.socket()
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind(("0.0.0.0", 80))
         server.listen(1)
+        server.settimeout(1.0)
         page = self.setup_page()
         while True:
-            client, _ = server.accept()
-            request = self.read_http_request(client)
-            if request.startswith("POST /save"):
-                body = request.split("\r\n\r\n", 1)[-1]
-                updated = self.parse_form(body)
-                if not updated.get("ssid"):
-                    self.send_html(client, self.setup_page("Le nom du Wi-Fi est obligatoire."))
+            self.feed()
+            self.led_set(True)  # solid LED indicates provisioning mode.
+            try:
+                client, _ = server.accept()
+            except OSError:
+                continue
+            try:
+                request = self.read_http_request(client)
+                if request.startswith("POST /save"):
+                    body = request.split("\r\n\r\n", 1)[-1]
+                    updated = self.parse_form(body)
+                    if not updated.get("ssid"):
+                        self.send_html(client, self.setup_page("Le nom du Wi-Fi est obligatoire."))
+                        client.close()
+                        continue
+                    self.settings.update(updated)
+                    self.save_config()
+                    self.send_html(client, "<h1>Saved</h1><p>Configuration sauvegardee. Redemarrage...</p>")
                     client.close()
-                    continue
-                self.settings.update(updated)
-                self.save_config()
-                self.send_html(client, "<h1>Saved</h1><p>Configuration sauvegardee. Redemarrage...</p>")
-                client.close()
-                time.sleep(2)
-                machine.reset()
-            else:
-                self.send_html(client, page)
-                client.close()
+                    self.sleep(2)
+                    machine.reset()
+                else:
+                    self.send_html(client, page)
+                    client.close()
+            except Exception as exc:
+                print("Setup request failed:", exc)
+                try:
+                    client.close()
+                except Exception:
+                    pass
 
     def read_http_request(self, client):
         request = client.recv(2048)
@@ -336,19 +578,55 @@ h1{{font-size:34px;line-height:1;margin:6px 0 16px}}
                 updated[key] = self.url_decode(value)
         return updated
 
+    # -- main loop -------------------------------------------------------------
+
+    def log_boot(self):
+        causes = {
+            getattr(machine, "PWRON_RESET", -1): "power-on",
+            getattr(machine, "WDT_RESET", -2): "watchdog",
+            getattr(machine, "HARD_RESET", -3): "hard",
+            getattr(machine, "SOFT_RESET", -4): "soft",
+            getattr(machine, "DEEPSLEEP_RESET", -5): "deepsleep"
+        }
+        try:
+            cause = causes.get(machine.reset_cause(), "unknown")
+        except Exception:
+            cause = "unknown"
+        print("Arborisis", config.FIRMWARE_VERSION, self.device_name, "reset:", cause)
+
+    def wait_cycle(self):
+        seconds = int(self.settings.get("sample_seconds", config.DEFAULT_SAMPLE_SECONDS))
+        for _ in range(max(1, seconds)):
+            self.feed()
+            self.handle_web_once()
+            time.sleep(1)
+
     def run(self):
+        self.log_boot()
         if not self.connect_wifi():
-            self.setup_ap()
+            self.setup_ap()  # blocks until provisioned, then resets.
+        # Arm the watchdog only once the slow boot-time probing is done.
+        try:
+            self.wdt = WDT(timeout=config.WATCHDOG_MS)
+        except Exception as exc:
+            print("Watchdog unavailable:", exc)
+        self.start_web_server()
         while True:
-            payload = self.read_payload()
-            self.latest_payload = payload
-            print(json.dumps(payload))
-            if not self.post_payload(payload):
-                self.connect_wifi()
-            self.start_web_server()
-            for _ in range(int(self.settings.get("sample_seconds", config.DEFAULT_SAMPLE_SECONDS))):
-                self.handle_web_once()
-                time.sleep(1)
+            try:
+                self.feed()
+                self.sync_time()
+                payload = self.read_payload()
+                self.latest_payload = payload
+                self.enqueue(payload)
+                self.flush_queue()
+                self.start_web_server()
+                self.heartbeat()
+            except Exception as exc:
+                print("Cycle failed:")
+                sys.print_exception(exc)
+                self.last_post = "cycle error"
+            gc.collect()
+            self.wait_cycle()
 
 
 app = ArborisisPico()

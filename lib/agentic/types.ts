@@ -81,6 +81,7 @@ export type AgentToolDefinition = {
 };
 
 export type AgentStructuredOutput = {
+  mode: "chat" | "analysis";
   reasoning: AgentReasoningStep[];
   healthScore: HealthScore;
   trends: TrendAnalysis[];

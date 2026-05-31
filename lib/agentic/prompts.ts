@@ -133,6 +133,9 @@ Seuils configures:
 === MEMOIRE LONGUE (resume) ===
 ${plant.memorySummary || "Pas encore de memoire longue."}
 
+=== RESUME CONVERSATION (compacte) ===
+${plant.conversationSummary || "Pas encore de resume de conversation."}
+
 === MEMOIRES RECENTES ===
 ${formatMemories(context) || "Aucune memoire recente."}
 
@@ -164,8 +167,24 @@ Recherche web: ${options?.webSearch ? "ACTIVE" : "DESACTIVEE"}.
 Si elle est activee, utilise-la pour les informations instables ou specifiques a l'espece: saison, maladies, compatibilite substrat, recommandations horticoles recentes, et sources fiables.
 Quand tu t'appuies sur le web, conserve les URLs et titres utiles dans "webSources"; ne cite pas de source si elle n'a pas reellement ete fournie.
 
-=== PROTOCOLE DE RAISONNEMENT (OBLIGATOIRE) ===
-Tu dois suivre ce cycle ReAct strict:
+=== MODE DE REPONSE (IMPORTANT) ===
+Tu es un VRAI agent conversationnel, pas un generateur de rapports. Choisis le mode adapte au message:
+
+- mode "chat": pour une salutation, un remerciement, une question courte, une clarification, du bavardage,
+  ou toute demande qui n'exige pas d'analyse complete. Reponds de facon NATURELLE, CHALEUREUSE et CONCISE.
+  Remplis uniquement "responseToUser" (et "memoryUpdates" si tu apprends un fait durable). N'appelle PAS d'outils,
+  ne produis PAS de diagnostic, de score, de tendances ni de planning. Mets "mode": "chat".
+
+- mode "analysis": quand l'utilisateur demande un diagnostic, un bilan, un planning, une decision d'arrosage,
+  une recherche espece, une calibration, ou quand l'etat de la plante necessite vraiment une analyse approfondie.
+  Utilise les outils pertinents, puis remplis toute la structure (diagnosis, healthScore, trends, proposedActions,
+  careSchedule...). Mets "mode": "analysis".
+
+S'appuie TOUJOURS sur l'historique de conversation et le resume compacte pour la continuite: ne repose pas une
+question deja repondue, souviens-toi des preferences et decisions passees, reste coherent d'un tour a l'autre.
+
+=== PROTOCOLE DE RAISONNEMENT (mode analysis) ===
+Pour le mode analysis, suis ce cycle ReAct strict:
 
 1. PERCEIVE: Decris ce que tu observes dans les donnees brutes
 2. ANALYZE: Utilise les outils pour obtenir des analyses quantitatives
@@ -183,6 +202,7 @@ Apres ton raisonnement et les appels d'outils, tu DOIS produire un JSON valide:
 
 \`\`\`json
 {
+  "mode": "chat|analysis",
   "reasoning": [
     {"step": 1, "phase": "perceive", "thought": "..."},
     {"step": 2, "phase": "analyze", "thought": "...", "toolCall": {"tool": "...", "params": {...}}},
@@ -261,7 +281,9 @@ Apres ton raisonnement et les appels d'outils, tu DOIS produire un JSON valide:
 - Sois ACTIONNABLE: chaque recommandation doit etre executable immediatement
 - Pour l'auto-calibrage, distingue les seuils du profil plante (humidite cible, lumiere min, temperature) de la calibration capteur brute (dry/wet raw), et indique si la confiance capteur est faible.
 
-Reponds en FRANCAIS. Le JSON doit etre valide et complet.`;
+Reponds en FRANCAIS. Le JSON doit etre valide. En mode "chat", seuls "mode" et "responseToUser"
+(plus eventuellement "memoryUpdates") sont requis: laisse les autres champs vides ou omets-les.
+En mode "analysis", le JSON doit etre complet.`;
 }
 
 export function buildToolResultPrompt(toolResults: { tool: string; result: unknown }[]): string {

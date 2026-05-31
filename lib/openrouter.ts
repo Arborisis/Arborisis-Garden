@@ -1,3 +1,5 @@
+import type { ColorAnomalyReport } from "./ml/colorAnomaly";
+
 type ChatMessage = {
   role: "system" | "user" | "assistant";
   content: string;
@@ -7,6 +9,8 @@ export type PlantPhotoAnalysis = {
   summary: string;
   observations: string[];
   recommendations: string[];
+  visualTags: string[];
+  colorAnomalyScore: number;
   healthScore: number | null;
   confidence: number;
 };
@@ -72,12 +76,16 @@ function parsePhotoAnalysis(content: string): PlantPhotoAnalysis {
       if (!summary) continue;
       const observations = Array.isArray(parsed.observations) ? parsed.observations.map(String).slice(0, 8) : [];
       const recommendations = Array.isArray(parsed.recommendations) ? parsed.recommendations.map(String).slice(0, 8) : [];
+      const visualTags = Array.isArray(parsed.visualTags) ? parsed.visualTags.map(String).slice(0, 12) : [];
+      const colorAnomalyScore = clampNumber(parsed.colorAnomalyScore, 0, 1, 0);
       const score = parsed.healthScore == null ? null : Math.round(clampNumber(parsed.healthScore, 0, 100, 50));
 
       return {
         summary,
         observations,
         recommendations,
+        visualTags,
+        colorAnomalyScore,
         healthScore: score,
         confidence: clampNumber(parsed.confidence, 0, 1, 0.5)
       };
@@ -90,9 +98,58 @@ function parsePhotoAnalysis(content: string): PlantPhotoAnalysis {
     summary: content.slice(0, 900) || "Analyse image non structuree.",
     observations: [],
     recommendations: [],
+    visualTags: [],
+    colorAnomalyScore: 0,
     healthScore: null,
     confidence: 0.35
   };
+}
+
+function uniqueStrings(values: string[]) {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function colorObservation(report: ColorAnomalyReport) {
+  if (!report.findings.length) return report.summary;
+  const main = report.findings[0];
+  return `Tags couleur locaux: ${report.tags.join(", ")}. Zone principale: ${main.label} (${main.position}, confiance ${Math.round(main.confidence * 100)}%).`;
+}
+
+function mergeColorReportIntoAnalysis(
+  analysis: PlantPhotoAnalysis,
+  report?: ColorAnomalyReport
+): PlantPhotoAnalysis {
+  if (!report) return analysis;
+
+  const localObservation = report.findings.length ? colorObservation(report) : "";
+  return {
+    ...analysis,
+    observations: uniqueStrings([
+      ...(localObservation ? [localObservation] : []),
+      ...analysis.observations
+    ]).slice(0, 8),
+    visualTags: uniqueStrings([...report.tags, ...analysis.visualTags]).slice(0, 12),
+    colorAnomalyScore: Math.max(report.anomalyScore, analysis.colorAnomalyScore)
+  };
+}
+
+function formatColorReportForPrompt(report?: ColorAnomalyReport) {
+  if (!report) return "";
+
+  const lines = [
+    "Pre-analyse ML locale des couleurs:",
+    `- score_anomalie_couleur: ${report.anomalyScore.toFixed(2)}; couverture_estimee: ${report.coveragePct.toFixed(2)}%; confiance: ${report.confidence.toFixed(2)}`,
+    `- tags_detectes: ${report.tags.length ? report.tags.join(", ") : "aucun"}`
+  ];
+
+  for (const finding of report.findings.slice(0, 8)) {
+    lines.push(
+      `- ${finding.view ? `${finding.view}: ` : ""}${finding.tag} (${finding.label}) position=${finding.position}, couverture=${finding.coveragePct.toFixed(2)}%, confiance=${finding.confidence.toFixed(2)}`
+    );
+  }
+
+  lines.push("Utilise ces tags comme indices visuels, verifie-les sur les images, corrige-les si necessaire et renvoie les tags pertinents dans visualTags.");
+  return lines.join("\n");
 }
 
 export async function streamOpenRouter(messages: ChatMessage[]) {
@@ -173,19 +230,35 @@ export async function streamOpenRouter(messages: ChatMessage[]) {
 }
 
 export async function analyzePlantPhotoWithOpenRouter(input: {
-  imageDataUrl: string;
+  imageDataUrl?: string;
+  imageDataUrls?: string[];
   plantContext: string;
   title?: string;
+  colorAnomalyReport?: ColorAnomalyReport;
 }): Promise<PlantPhotoAnalysis> {
+  const imageDataUrls = input.imageDataUrls?.length
+    ? input.imageDataUrls
+    : input.imageDataUrl
+      ? [input.imageDataUrl]
+      : [];
+
+  if (!imageDataUrls.length) {
+    throw new Error("Aucune image fournie pour l'analyse.");
+  }
+
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
-    return {
-      summary: "Analyse IA indisponible: OPENROUTER_API_KEY n'est pas configure.",
-      observations: [],
+    return mergeColorReportIntoAnalysis({
+      summary: input.colorAnomalyReport?.findings.length
+        ? `Analyse IA indisponible: OPENROUTER_API_KEY n'est pas configure. ${input.colorAnomalyReport.summary}`
+        : "Analyse IA indisponible: OPENROUTER_API_KEY n'est pas configure.",
+      observations: input.colorAnomalyReport?.findings.length ? [colorObservation(input.colorAnomalyReport)] : [],
       recommendations: ["Configurer OPENROUTER_API_KEY pour activer l'analyse photo par OpenRouter."],
+      visualTags: input.colorAnomalyReport?.tags ?? [],
+      colorAnomalyScore: input.colorAnomalyReport?.anomalyScore ?? 0,
       healthScore: null,
       confidence: 0
-    };
+    }, input.colorAnomalyReport);
   }
 
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -206,8 +279,8 @@ export async function analyzePlantPhotoWithOpenRouter(input: {
           role: "system",
           content:
             "Tu es un expert horticole qui analyse des photos de plantes. Reponds uniquement avec un JSON valide: " +
-            "{\"summary\":\"...\",\"observations\":[\"...\"],\"recommendations\":[\"...\"],\"healthScore\":0-100|null,\"confidence\":0-1}. " +
-            "Ne diagnostique pas une maladie avec certitude depuis une image seule; indique les incertitudes."
+            "{\"summary\":\"...\",\"observations\":[\"...\"],\"recommendations\":[\"...\"],\"visualTags\":[\"tache-jaune\"],\"colorAnomalyScore\":0-1,\"healthScore\":0-100|null,\"confidence\":0-1}. " +
+            "Quand plusieurs vues sont fournies, recoupe-les avant de conclure. Ne diagnostique pas une maladie avec certitude depuis les images seules; indique les incertitudes."
         },
         {
           role: "user",
@@ -215,14 +288,22 @@ export async function analyzePlantPhotoWithOpenRouter(input: {
             {
               type: "text",
               text:
-                `Titre photo: ${input.title || "photo plante"}\n` +
+                `Titre analyse: ${input.title || "photo plante"}\n` +
+                `Nombre de vues: ${imageDataUrls.length}\n` +
                 `${input.plantContext}\n\n` +
-                "Analyse les signes visibles: feuilles, couleur, taches, port, substrat visible, stress hydrique/lumiere, et donne des actions concretes."
+                `${formatColorReportForPrompt(input.colorAnomalyReport)}\n\n` +
+                "Analyse les signes visibles sur toutes les vues: feuilles, couleur, taches, port, substrat visible, stress hydrique/lumiere, coherence entre angles, et donne des actions concretes."
             },
-            {
-              type: "image_url",
-              image_url: { url: input.imageDataUrl }
-            }
+            ...imageDataUrls.flatMap((imageDataUrl, index) => [
+              {
+                type: "text",
+                text: `Vue ${index + 1}/${imageDataUrls.length}`
+              },
+              {
+                type: "image_url",
+                image_url: { url: imageDataUrl }
+              }
+            ])
           ]
         }
       ]
@@ -236,5 +317,8 @@ export async function analyzePlantPhotoWithOpenRouter(input: {
 
   const json = await response.json();
   const content = json.choices?.[0]?.message?.content;
-  return parsePhotoAnalysis(typeof content === "string" ? content : JSON.stringify(content ?? ""));
+  return mergeColorReportIntoAnalysis(
+    parsePhotoAnalysis(typeof content === "string" ? content : JSON.stringify(content ?? "")),
+    input.colorAnomalyReport
+  );
 }

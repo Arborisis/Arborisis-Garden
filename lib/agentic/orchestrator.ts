@@ -9,55 +9,11 @@ import type {
 } from "./types";
 import { AGENT_TOOLS, createToolExecutor } from "./tools";
 import { buildAgenticSystemPrompt, buildToolResultPrompt } from "./prompts";
-import { persistMemories, updateMemorySummary, closeResolvedAlerts } from "./memory";
+import { persistMemories, updateMemorySummary, closeResolvedAlerts, CONVERSATION_KEEP_WINDOW } from "./memory";
+import { callOpenRouter } from "./llm";
 
 const TOOL_CALL_REGEX = /<tool_call>\s*({[\s\S]*?})\s*<\/tool_call>/g;
 const JSON_BLOCK_REGEX = /```(?:json)?\s*([\s\S]*?)\s*```/i;
-
-type OpenRouterReasoningResult = {
-  content: string;
-  webSources: ResearchSource[];
-  webSearchRequests: number;
-};
-
-type OpenRouterAnnotation = {
-  type?: string;
-  url_citation?: {
-    url?: string;
-    title?: string;
-    content?: string;
-  };
-};
-
-function readNumberEnv(name: string, fallback: number) {
-  const value = Number(process.env[name]);
-  return Number.isFinite(value) && value > 0 ? value : fallback;
-}
-
-function buildOpenRouterWebTool() {
-  const parameters: Record<string, unknown> = {
-    engine: process.env.OPENROUTER_WEB_SEARCH_ENGINE ?? "auto",
-    max_results: readNumberEnv("OPENROUTER_WEB_SEARCH_MAX_RESULTS", 5),
-    max_total_results: readNumberEnv("OPENROUTER_WEB_SEARCH_MAX_TOTAL_RESULTS", 10)
-  };
-
-  const contextSize = process.env.OPENROUTER_WEB_SEARCH_CONTEXT_SIZE;
-  if (contextSize === "low" || contextSize === "medium" || contextSize === "high") {
-    parameters.search_context_size = contextSize;
-  }
-
-  return { type: "openrouter:web_search", parameters };
-}
-
-function extractWebSources(annotations: OpenRouterAnnotation[]): ResearchSource[] {
-  return annotations
-    .filter((annotation) => annotation.type === "url_citation" && annotation.url_citation?.url)
-    .map((annotation) => ({
-      title: annotation.url_citation?.title || annotation.url_citation?.url || "Source web",
-      url: annotation.url_citation?.url || "",
-      snippet: annotation.url_citation?.content?.slice(0, 260)
-    }));
-}
 
 function mergeWebSources(sources: ResearchSource[]) {
   const seen = new Set<string>();
@@ -68,51 +24,6 @@ function mergeWebSources(sources: ResearchSource[]) {
     merged.push(source);
   }
   return merged.slice(0, 8);
-}
-
-async function callOpenRouterForReasoning(
-  messages: Array<{ role: string; content: string }>,
-  options?: { webSearch?: boolean }
-): Promise<OpenRouterReasoningResult> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    throw new Error("OPENROUTER_API_KEY manquant");
-  }
-
-  const body: Record<string, unknown> = {
-    model: process.env.OPENROUTER_MODEL ?? "anthropic/claude-sonnet-4-6",
-    stream: false,
-    temperature: 0.15,
-    messages
-  };
-
-  if (options?.webSearch) {
-    body.tools = [buildOpenRouterWebTool()];
-  }
-
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": process.env.OPENROUTER_SITE_URL ?? "http://localhost:3000",
-      "X-Title": process.env.OPENROUTER_APP_NAME ?? "Arborisis Garden"
-    },
-    body: JSON.stringify(body)
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`OpenRouter error: ${text}`);
-  }
-
-  const json = await response.json();
-  const message = json.choices?.[0]?.message;
-  return {
-    content: message?.content ?? "",
-    webSources: extractWebSources(message?.annotations ?? []),
-    webSearchRequests: Number(json.usage?.server_tool_use?.web_search_requests ?? 0)
-  };
 }
 
 function parseToolCalls(content: string): AgentToolCall[] {
@@ -299,7 +210,19 @@ function validateStructuredOutput(parsed: unknown): AgentStructuredOutput {
     return Math.max(0, Math.min(100, Math.round(value)));
   };
 
+  const hasAnalysisPayload = Boolean(
+    (Array.isArray(p.proposedActions) && p.proposedActions.length) ||
+    (Array.isArray(p.careSchedule) && p.careSchedule.length) ||
+    (Array.isArray(p.trends) && p.trends.length) ||
+    (typeof diagnosis.summary === "string" && diagnosis.summary && diagnosis.summary !== "Diagnostic non disponible")
+  );
+  const mode: AgentStructuredOutput["mode"] =
+    p.mode === "chat" || p.mode === "analysis"
+      ? p.mode
+      : hasAnalysisPayload ? "analysis" : "chat";
+
   return {
+    mode,
     reasoning: Array.isArray(p.reasoning) ? p.reasoning : [{ step: 1, phase: "perceive", thought: "Raisonnement non structure" }],
     healthScore: {
       overall: readScore("overall", 50),
@@ -327,6 +250,7 @@ function validateStructuredOutput(parsed: unknown): AgentStructuredOutput {
 
 function createFallbackOutput(content: string): AgentStructuredOutput {
   return {
+    mode: "chat",
     reasoning: [{ step: 1, phase: "perceive", thought: "Reponse brute sans structure JSON" }],
     healthScore: {
       overall: 50, moisture: 50, temperature: 50, light: 50, stability: 50,
@@ -359,43 +283,70 @@ export async function runAgenticLoop(
   const webSearch = options?.webSearch ?? true;
   const systemPrompt = buildAgenticSystemPrompt(context, AGENT_TOOLS, { webSearch });
 
-  // Phase 1: Initial reasoning with tool calls
-  const latestUserMessage = context.chatHistory?.find((entry) => entry.role === "user")?.content;
-  const initialMessages = [
+  // Conversation multi-tours: on envoie la fenetre recente en vrais tours user/assistant
+  // (le resume des tours plus anciens est deja injecte dans le system prompt).
+  const history = (context.chatHistory ?? [])
+    .slice()
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  const recentTurns = history.slice(-CONVERSATION_KEEP_WINDOW).map((msg) => ({
+    role: msg.role === "user" ? "user" : "assistant",
+    content: msg.content
+  }));
+
+  const initialMessages: Array<{ role: string; content: string }> = [
     { role: "system", content: systemPrompt },
-    { role: "user", content: latestUserMessage ?? "Analyse l'etat actuel de la plante et propose un plan d'action." }
+    ...recentTurns
   ];
-
-  const phase1 = await callOpenRouterForReasoning(initialMessages, { webSearch });
-  const toolCalls = parseToolCalls(phase1.content);
-
-  // Phase 2: Execute tools
-  const executedTools: { tool: string; result: unknown }[] = [];
-  for (const call of toolCalls) {
-    const executor = (tools as Record<string, (params: unknown) => unknown>)[call.tool];
-    if (executor) {
-      try {
-        const result = executor(call.params);
-        executedTools.push({ tool: call.tool, result });
-      } catch (error) {
-        executedTools.push({ tool: call.tool, result: { error: String(error) } });
-      }
-    }
+  if (!recentTurns.some((turn) => turn.role === "user")) {
+    initialMessages.push({
+      role: "user",
+      content: "Analyse l'etat actuel de la plante et propose un plan d'action."
+    });
   }
 
-  // Phase 3: Final synthesis with tool results
-  const phase3Messages = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: initialMessages[1].content },
-    { role: "assistant", content: phase1.content },
-    { role: "user", content: buildToolResultPrompt(executedTools) }
-  ];
+  // Phase 1: raisonnement initial + eventuels appels d'outils
+  const phase1 = await callOpenRouter(initialMessages, { webSearch });
+  const toolCalls = parseToolCalls(phase1.content);
 
-  const phase3 = await callOpenRouterForReasoning(phase3Messages, { webSearch });
-  const structuredOutput = parseStructuredOutput(phase3.content);
+  const executedTools: { tool: string; result: unknown }[] = [];
+  let structuredOutput: AgentStructuredOutput;
+  let phase3WebSources: ResearchSource[] = [];
+  let phase3Requests = 0;
+
+  if (toolCalls.length) {
+    // Phase 2: execution des outils demandes
+    for (const call of toolCalls) {
+      const executor = (tools as Record<string, (params: unknown) => unknown>)[call.tool];
+      if (executor) {
+        try {
+          const result = executor(call.params);
+          executedTools.push({ tool: call.tool, result });
+        } catch (error) {
+          executedTools.push({ tool: call.tool, result: { error: String(error) } });
+        }
+      }
+    }
+
+    // Phase 3: synthese finale avec les resultats d'outils
+    const phase3Messages = [
+      ...initialMessages,
+      { role: "assistant", content: phase1.content },
+      { role: "user", content: buildToolResultPrompt(executedTools) }
+    ];
+    const phase3 = await callOpenRouter(phase3Messages, { webSearch });
+    structuredOutput = parseStructuredOutput(phase3.content);
+    phase3WebSources = phase3.webSources;
+    phase3Requests = phase3.webSearchRequests;
+  } else {
+    // Tour simple: pas d'outil demande. Si un JSON structure est deja present on l'utilise,
+    // sinon on traite la reponse comme un message conversationnel (mode chat) -> 1 seul appel LLM.
+    const direct = extractStructuredJson(phase1.content);
+    structuredOutput = direct ? validateStructuredOutput(direct) : createFallbackOutput(phase1.content);
+  }
+
   const webSources = mergeWebSources([
     ...phase1.webSources,
-    ...phase3.webSources,
+    ...phase3WebSources,
     ...structuredOutput.webSources
   ]);
   structuredOutput.webSources = webSources;
@@ -431,7 +382,7 @@ export async function runAgenticLoop(
     structuredOutput,
     executedTools,
     webSources,
-    webSearchRequests: phase1.webSearchRequests + phase3.webSearchRequests,
+    webSearchRequests: phase1.webSearchRequests + phase3Requests,
     persistedMemories,
     closedAlertMemories,
     persistedCalendarEvents,
@@ -441,6 +392,23 @@ export async function runAgenticLoop(
 
 export function buildStreamingResponse(result: AgentExecutionResult): string {
   const { structuredOutput } = result;
+
+  // Mode conversationnel: reponse naturelle uniquement, sans cartes de diagnostic.
+  // Le bloc JSON final (avec `mode`) reste embarque pour un parsing frontend fiable.
+  if (structuredOutput.mode === "chat") {
+    const chatPayload = {
+      mode: "chat",
+      responseToUser: structuredOutput.responseToUser,
+      webSources: structuredOutput.webSources
+    };
+    const parts = [structuredOutput.responseToUser];
+    if (structuredOutput.webSources.length) {
+      parts.push("\n## Sources web:");
+      structuredOutput.webSources.forEach((source) => parts.push(`- ${source.title}: ${source.url}`));
+    }
+    parts.push(`\n\`\`\`json\n${JSON.stringify(chatPayload)}\n\`\`\``);
+    return parts.join("\n");
+  }
 
   // Build a rich streaming response that includes reasoning and actions
   const sections: string[] = [];
@@ -518,6 +486,7 @@ export function buildStreamingResponse(result: AgentExecutionResult): string {
 
   // Embed structured JSON at end for reliable frontend parsing
   const frontendPayload = {
+    mode: "analysis",
     diagnosis: structuredOutput.diagnosis,
     healthScore: structuredOutput.healthScore,
     proposedActions: structuredOutput.proposedActions,

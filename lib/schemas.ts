@@ -59,11 +59,26 @@ export const plantPhotoQuerySchema = z.object({
   plantId: z.string().min(1)
 });
 
-export const plantPhotoCreateSchema = z.object({
-  plantId: z.string().min(1),
+const plantPhotoImageSchema = z.object({
   title: z.string().min(1).max(90).optional(),
   imageDataUrl: z.string().min(32).max(7_500_000),
   takenAt: z.string().datetime().optional()
+});
+
+export const plantPhotoCreateSchema = z.object({
+  plantId: z.string().min(1),
+  title: z.string().min(1).max(90).optional(),
+  imageDataUrl: z.string().min(32).max(7_500_000).optional(),
+  takenAt: z.string().datetime().optional(),
+  images: z.array(plantPhotoImageSchema).min(1).max(6).optional()
+}).superRefine((value, context) => {
+  if (!value.imageDataUrl && !value.images?.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Au moins une image est requise.",
+      path: ["images"]
+    });
+  }
 });
 
 export const plantPhotoDeleteSchema = z.object({

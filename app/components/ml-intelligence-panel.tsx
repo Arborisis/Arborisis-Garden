@@ -40,7 +40,7 @@ type ModelVersion = {
   sampleCount: number;
   isActive: boolean;
   weights: { sensor: number; visual: number; weather: number; llm: number };
-  metrics: { rmse: number; mae: number; epochs: number } | null;
+  metrics: { rmse?: number; mae?: number; epochs?: number } | null;
 };
 
 type MLState = {
@@ -54,6 +54,9 @@ type MLState = {
     moistureSlopePctPerHour: number;
     photoHealth: number;
     photoConfidence: number;
+    photoColorAnomalyScore: number;
+    photoColorAnomalyConfidence: number;
+    photoSpotCountNorm: number;
   } | null;
 };
 
@@ -81,6 +84,10 @@ function scoreColor(score: number): string {
   if (score >= 50) return "var(--moss)";
   if (score >= 30) return "var(--sun)";
   return "var(--danger)";
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 function Bar({ value, color, label }: { value: number; color: string; label: string }) {
@@ -402,6 +409,20 @@ export function MLIntelligencePanel({
                 <span>Confiance photo</span>
                 <strong>{Math.round(features.photoConfidence * 100)}%</strong>
               </div>
+              <div className="mlFeatureItem">
+                <span>Taches couleur</span>
+                <strong style={{ color: features.photoColorAnomalyScore > 0.35 ? "var(--sun)" : "var(--ink)" }}>
+                  {Math.round(features.photoColorAnomalyScore * 100)}%
+                </strong>
+              </div>
+              <div className="mlFeatureItem">
+                <span>Confiance couleur</span>
+                <strong>{Math.round(features.photoColorAnomalyConfidence * 100)}%</strong>
+              </div>
+              <div className="mlFeatureItem">
+                <span>Tags visuels</span>
+                <strong>{Math.round(features.photoSpotCountNorm * 6)}</strong>
+              </div>
             </div>
           )}
         </div>
@@ -465,11 +486,11 @@ export function MLIntelligencePanel({
                   </div>
                   <div className="mlHistoryMeta">
                     <span>{v.sampleCount} éch.</span>
-                    {v.metrics && (
-                      <>
-                        <span>RMSE {v.metrics.rmse.toFixed(2)}</span>
-                        <span>MAE {v.metrics.mae.toFixed(2)}</span>
-                      </>
+                    {isFiniteNumber(v.metrics?.rmse) && (
+                      <span>RMSE {v.metrics.rmse.toFixed(2)}</span>
+                    )}
+                    {isFiniteNumber(v.metrics?.mae) && (
+                      <span>MAE {v.metrics.mae.toFixed(2)}</span>
                     )}
                   </div>
                   <div className="mlWeightRow mlWeightRowSmall">

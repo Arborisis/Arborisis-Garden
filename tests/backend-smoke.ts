@@ -27,6 +27,8 @@ const alerts = evaluateReading(
     minSoilTempC: 10,
     maxSoilTempC: 30,
     memorySummary: "",
+    conversationSummary: "",
+    lastCompactedAt: null,
     createdAt: new Date(),
     updatedAt: new Date()
   },

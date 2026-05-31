@@ -46,9 +46,16 @@ export function computeWeatherRisk(f: MLFeatures): number {
 }
 
 export function computeVisualScore(f: MLFeatures): number {
-  if (f.photoFreshness === 0 || f.photoConfidence === 0) return 50
-  const reliability = f.photoConfidence * f.photoFreshness
-  return c100(f.photoHealth * 100 * reliability + 50 * (1 - reliability))
+  const llmReliability = f.photoConfidence * f.photoFreshness
+  const colorReliability = f.photoColorAnomalyConfidence * f.photoFreshness
+  if (f.photoFreshness === 0 && llmReliability === 0 && colorReliability === 0) return 50
+
+  const llmScore = f.photoHealth * 100 * llmReliability + 50 * (1 - llmReliability)
+  const colorPenalty =
+    (f.photoColorAnomalyScore * 38 + f.photoSpotCountNorm * 12) * colorReliability
+  const base = llmReliability > 0 ? llmScore : 65
+
+  return c100(base - colorPenalty)
 }
 
 export function computeLlmConsensus(f: MLFeatures): number {

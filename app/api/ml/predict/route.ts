@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
 import { z } from "zod"
 import { extractFeatures } from "@/lib/ml/features"
-import { predict } from "@/lib/ml/model"
+import { mixtureWeights, predict } from "@/lib/ml/model"
 import { DEFAULT_WEIGHTS, type ModelWeights } from "@/lib/ml/types"
 import { getWeatherContext } from "@/lib/weather"
 import { getCachedInsights } from "@/lib/insights"
@@ -85,9 +85,12 @@ export async function GET(req: Request) {
       targetMoisturePct: features.targetMoisturePct,
       moistureSlopePctPerHour: features.moistureSlopePctPerHour,
       photoHealth: features.photoHealth,
-      photoConfidence: features.photoConfidence
+      photoConfidence: features.photoConfidence,
+      photoColorAnomalyScore: features.photoColorAnomalyScore,
+      photoColorAnomalyConfidence: features.photoColorAnomalyConfidence,
+      photoSpotCountNorm: features.photoSpotCountNorm
     },
     modelVersion: modelInfo ?? { version: "default", trainedAt: null, sampleCount: 0 },
-    weights: activeWeights
+    weights: mixtureWeights(activeWeights)
   })
 }

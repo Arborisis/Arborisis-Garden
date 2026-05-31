@@ -23,6 +23,9 @@ export type MLFeatures = {
   photoHealth: number             // healthScore / 100
   photoConfidence: number         // 0-1 confidence
   photoFreshness: number          // exp(-ageDays/30)
+  photoColorAnomalyScore: number  // 0-1 local strange-color detector score
+  photoColorAnomalyConfidence: number
+  photoSpotCountNorm: number      // suspicious color tags / 6
 
   // LLM insights cluster (0.5/0.3/0 priors when no insights)
   insightGoodRatio: number
@@ -55,18 +58,64 @@ export type MLPrediction = {
   generatedAt: string
 }
 
-export type ModelWeights = {
+/** Legacy v1 weights: a normalized blend over the 4 domain experts. */
+export type LegacyWeights = {
   sensor: number
   visual: number
   weather: number
   llm: number
 }
 
+/** Softmax logits over the 4 domain experts (unconstrained, always sum-to-1 after softmax). */
+export type ExpertLogits = {
+  sensor: number
+  visual: number
+  weather: number
+  llm: number
+}
+
+/**
+ * Learnable residual head sitting on top of the engineered expert blend.
+ * Capacity adapts to data volume:
+ *  - 'none'   → pure expert mixture (robust default, tiny data)
+ *  - 'linear' → standardized-feature linear correction
+ *  - 'mlp'    → one tanh hidden layer for non-linear corrections
+ * The output is squashed to ±range points and anchored near zero by L2.
+ */
+export type ResidualHead = {
+  kind: "none" | "linear" | "mlp"
+  norm: { mean: number[]; std: number[] }
+  range: number
+  // linear
+  w?: number[]
+  b?: number
+  // mlp
+  W1?: number[][]
+  b1?: number[]
+  W2?: number[]
+  b2?: number
+}
+
+export type ModelWeights = {
+  version: 2
+  experts: ExpertLogits
+  residual: ResidualHead
+}
+
+/** Logits chosen so softmax ≈ the historical v1 default blend. */
 export const DEFAULT_WEIGHTS: ModelWeights = {
-  sensor: 0.45,
-  visual: 0.30,
-  weather: 0.15,
-  llm: 0.10
+  version: 2,
+  experts: {
+    sensor: Math.log(0.45),
+    visual: Math.log(0.30),
+    weather: Math.log(0.15),
+    llm: Math.log(0.10)
+  },
+  residual: {
+    kind: "none",
+    norm: { mean: [], std: [] },
+    range: 25
+  }
 }
 
 export type TrainingSample = {

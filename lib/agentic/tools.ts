@@ -465,6 +465,9 @@ export function createToolExecutor(
           analysis: photo.analysis,
           observations: parseJsonStringArray(photo.observations),
           recommendations: parseJsonStringArray(photo.recommendations),
+          colorTags: parseJsonStringArray(photo.colorTags),
+          colorAnomalyScore: photo.colorAnomalyScore,
+          colorAnomalyConfidence: photo.colorAnomalyConfidence,
           healthScore: photo.healthScore,
           confidence: photo.confidence
         }))

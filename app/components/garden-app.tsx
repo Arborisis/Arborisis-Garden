@@ -21,12 +21,14 @@ import {
   Download,
   Droplets,
   Globe2,
+  Home,
   ImagePlus,
   Leaf,
   Lightbulb,
   MapPin,
   MessageCircle,
   Moon,
+  MoreHorizontal,
   Plus,
   RefreshCw,
   Save,
@@ -110,6 +112,10 @@ type PlantPhoto = {
   recommendations: string[];
   healthScore: number | null;
   confidence: number;
+  colorTags: string[];
+  colorAnomalyScore: number;
+  colorAnomalyConfidence: number;
+  colorFindings: unknown[];
   createdAt: string;
   updatedAt: string;
 };
@@ -204,6 +210,7 @@ type AgentSource = {
 };
 
 type ParsedAgentResponse = {
+  mode: "chat" | "analysis";
   diagnosis: { severity: string; summary: string };
   healthScore: { overall: number; moisture: number; temperature: number; light: number; stability: number };
   actions: AgentAction[];
@@ -211,6 +218,14 @@ type ParsedAgentResponse = {
   sources: AgentSource[];
   tools: string[];
   responseToUser: string;
+};
+
+type ChatTurn = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  parsed?: ParsedAgentResponse | null;
+  pending?: boolean;
 };
 
 const emptyPlant = {
@@ -269,12 +284,14 @@ const agentPresets = [
   { label: "Diagnostic urgent", prompt: "Fais un diagnostic urgent: risques racines, lumiere, temperature, arrosage, et action immediate la plus prudente.", variant: "urgent" }
 ];
 
+const maxPhotoUploadViews = 6;
+
 export function GardenApp() {
   const [plants, setPlants] = useState<Plant[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [answer, setAnswer] = useState("");
-  const [parsedAgent, setParsedAgent] = useState<ParsedAgentResponse | null>(null);
+  const [chatThread, setChatThread] = useState<ChatTurn[]>([]);
   const [showReasoning, setShowReasoning] = useState(false);
   const [chatBusy, setChatBusy] = useState(false);
   const [webSearch, setWebSearch] = useState(true);
@@ -290,6 +307,7 @@ export function GardenApp() {
   const [weather, setWeather] = useState<WeatherContext | null>(null);
   const [weatherLoading, setWeatherLoading] = useState(false);
   const [weatherStatus, setWeatherStatus] = useState("");
+  const [weatherTrendMode, setWeatherTrendMode] = useState<"next" | "sun" | "rain">("next");
   const [photos, setPhotos] = useState<PlantPhoto[]>([]);
   const [photoTitle, setPhotoTitle] = useState("");
   const [photoBusy, setPhotoBusy] = useState(false);
@@ -298,6 +316,7 @@ export function GardenApp() {
   const [calendarBusy, setCalendarBusy] = useState(false);
   const [calendarStatus, setCalendarStatus] = useState("");
   const [pushState, setPushState] = useState<"unsupported" | "denied" | "subscribed" | "idle" | "loading">("loading");
+  const [activeTab, setActiveTab] = useState("home");
   const [showPairingModal, setShowPairingModal] = useState(false);
   const [showUnpairConfirm, setShowUnpairConfirm] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<Event & { prompt(): Promise<void>; userChoice: Promise<{ outcome: string }> } | null>(null);
@@ -480,6 +499,39 @@ export function GardenApp() {
     void refreshCalendar(plant.id);
   }, [plant?.id]);
 
+  // Hydrate le fil de conversation au changement de plante.
+  useEffect(() => {
+    if (!plant?.id) {
+      setChatThread([]);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/chat?plantId=${encodeURIComponent(plant.id)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled || !Array.isArray(data.messages)) return;
+        const turns: ChatTurn[] = data.messages.map((m: { id: string; role: string; content: string }) => ({
+          id: m.id,
+          role: m.role === "user" ? "user" : "assistant",
+          content: m.role === "user" ? m.content : "",
+          parsed: m.role === "user" ? undefined : parseAgentResponse(m.content)
+        }));
+        // Pour l'assistant, on affiche la reponse naturelle parsee plutot que le payload brut.
+        for (const turn of turns) {
+          if (turn.role === "assistant" && turn.parsed) {
+            turn.content = turn.parsed.responseToUser;
+          }
+        }
+        setChatThread(turns);
+      } catch { /* ignore */ }
+    })();
+
+    return () => { cancelled = true; };
+  }, [plant?.id]);
+
   useEffect(() => {
     if (!plant?.id) {
       setAiInsights([]);
@@ -586,22 +638,46 @@ export function GardenApp() {
     setCalibrationBusy(false);
   }
 
-  async function uploadPhoto(file: File | null) {
-    if (!plant || !file || photoBusy) return;
+  async function uploadPhotos(files: FileList | File[] | null) {
+    const selectedFiles = Array.from(files ?? []);
+    if (!plant || !selectedFiles.length || photoBusy) return;
+
+    const uploadFiles = selectedFiles.slice(0, maxPhotoUploadViews);
+    const skippedCount = selectedFiles.length - uploadFiles.length;
     setPhotoBusy(true);
-    setPhotoStatus("Compression de la photo...");
+    setPhotoStatus(
+      uploadFiles.length > 1
+        ? `Compression des vues 1/${uploadFiles.length}...`
+        : "Compression de la photo..."
+    );
 
     try {
-      const imageDataUrl = await prepareImageDataUrl(file);
-      setPhotoStatus("Envoi dans le bucket Railway et analyse IA...");
+      const images: Array<{ title: string; imageDataUrl: string; takenAt: string }> = [];
+      for (const [index, file] of uploadFiles.entries()) {
+        setPhotoStatus(
+          uploadFiles.length > 1
+            ? `Compression des vues ${index + 1}/${uploadFiles.length}...`
+            : "Compression de la photo..."
+        );
+        images.push({
+          title: buildPhotoUploadTitle(file, index, uploadFiles.length, photoTitle),
+          imageDataUrl: await prepareImageDataUrl(file),
+          takenAt: new Date(file.lastModified || Date.now()).toISOString()
+        });
+      }
+
+      setPhotoStatus(
+        uploadFiles.length > 1
+          ? "Envoi des vues dans le bucket Railway et analyse IA..."
+          : "Envoi dans le bucket Railway et analyse IA..."
+      );
       const response = await fetch("/api/photos", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           plantId: plant.id,
-          title: photoTitle.trim() || file.name.replace(/\.[^.]+$/, "") || "Photo plante",
-          imageDataUrl,
-          takenAt: new Date(file.lastModified || Date.now()).toISOString()
+          title: photoTitle.trim() || undefined,
+          images
         })
       });
 
@@ -610,8 +686,13 @@ export function GardenApp() {
         throw new Error(error?.error ?? "Upload photo impossible");
       }
 
+      const data = await response.json() as { photos?: PlantPhoto[]; photo?: PlantPhoto };
+      const uploadedCount = data.photos?.length ?? (data.photo ? 1 : uploadFiles.length);
       setPhotoTitle("");
-      setPhotoStatus("Photo stockee dans le bucket Railway et analysee par OpenRouter.");
+      setPhotoStatus(
+        `${uploadedCount} ${uploadedCount > 1 ? "photos stockees" : "photo stockee"} et ${uploadedCount > 1 ? "analysees" : "analysee"} par OpenRouter.` +
+          (skippedCount > 0 ? ` ${skippedCount} vue(s) ignoree(s): maximum ${maxPhotoUploadViews}.` : "")
+      );
       await refreshPhotos(plant.id);
     } catch (error) {
       setPhotoStatus(error instanceof Error ? error.message : "Upload photo impossible");
@@ -741,7 +822,10 @@ export function GardenApp() {
       tools.push(match[1].trim());
     }
 
+    const looksLikeAnalysis = Boolean(severityMatch) || actions.length > 0 || plan.length > 0;
+
     return {
+      mode: looksLikeAnalysis ? "analysis" : "chat",
       diagnosis: {
         severity: severityMatch?.[1]?.toLowerCase() ?? "unknown",
         summary: summaryMatch?.[1]?.trim() ?? "Diagnostic non disponible"
@@ -757,7 +841,10 @@ export function GardenApp() {
       plan,
       sources,
       tools,
-      responseToUser: userResponseMatch?.[1]?.trim() ?? text
+      // En mode chat le texte visible (hors bloc JSON) EST la reponse.
+      responseToUser: userResponseMatch?.[1]?.trim()
+        ?? text.replace(/```(?:json)?[\s\S]*?```/g, "").trim()
+        ?? text
     };
   }
 
@@ -855,7 +942,18 @@ export function GardenApp() {
       return Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : fallback;
     };
 
+    const hasAnalysisPayload = Boolean(
+      (Array.isArray(parsed.proposedActions) && parsed.proposedActions.length) ||
+      (Array.isArray(parsed.careSchedule) && parsed.careSchedule.length) ||
+      (typeof diagnosis.summary === "string" && diagnosis.summary)
+    );
+    const mode: ParsedAgentResponse["mode"] =
+      parsed.mode === "chat" || parsed.mode === "analysis"
+        ? parsed.mode
+        : hasAnalysisPayload ? "analysis" : "chat";
+
     return {
+      mode,
       diagnosis: {
         severity: typeof diagnosis.severity === "string" ? diagnosis.severity : "unknown",
         summary: typeof diagnosis.summary === "string" ? diagnosis.summary : "Diagnostic non disponible"
@@ -909,43 +1007,70 @@ export function GardenApp() {
     };
   }
 
+  function stripJsonFences(text: string) {
+    return text.replace(/```(?:json)?[\s\S]*?```/g, "").trim();
+  }
+
+  function newTurnId() {
+    return typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random());
+  }
+
   async function askAgent() {
     if (!plant || !message.trim()) return;
+    const userText = message.trim();
+    const assistantId = newTurnId();
+
     setChatBusy(true);
     setAnswer("");
-    setParsedAgent(null);
     setShowReasoning(false);
+    setMessage("");
+    setChatThread((prev) => [
+      ...prev,
+      { id: newTurnId(), role: "user", content: userText },
+      { id: assistantId, role: "assistant", content: "", pending: true }
+    ]);
 
-    const response = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ plantId: plant.id, message, webSearch, weatherLocation, timezone })
-    });
-
-    const reader = response.body?.getReader();
-    const decoder = new TextDecoder();
-    if (!reader) {
-      const text = await response.text();
-      setAnswer(text);
-      setParsedAgent(parseAgentResponse(text));
-      await refreshCalendar(plant.id);
-      setChatBusy(false);
-      return;
-    }
+    const updateAssistant = (patch: Partial<ChatTurn>) =>
+      setChatThread((prev) => prev.map((turn) => (turn.id === assistantId ? { ...turn, ...patch } : turn)));
 
     let fullText = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value, { stream: true });
-      fullText += chunk;
-      setAnswer((current) => current + chunk);
-    }
+    let responseReceived = false;
 
-    setParsedAgent(parseAgentResponse(fullText));
-    setMessage("");
-    await refreshCalendar(plant.id);
-    setChatBusy(false);
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plantId: plant.id, message: userText, webSearch, weatherLocation, timezone })
+      });
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+
+      if (!reader) {
+        fullText = await response.text();
+      } else {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          fullText += decoder.decode(value, { stream: true });
+          setAnswer(fullText);
+          updateAssistant({ content: stripJsonFences(fullText) || "..." });
+        }
+      }
+
+      const parsed = parseAgentResponse(fullText);
+      updateAssistant({ content: parsed.responseToUser, parsed, pending: false });
+      responseReceived = true;
+      await refreshCalendar(plant.id).catch(() => {});
+    } catch (err) {
+      if (!responseReceived) {
+        const msg = err instanceof Error ? err.message : "Erreur de connexion";
+        setAnswer(`Erreur: ${msg}`);
+        updateAssistant({ content: `Erreur: ${msg}`, pending: false });
+      }
+    } finally {
+      setChatBusy(false);
+    }
   }
 
   async function togglePush() {
@@ -1004,6 +1129,13 @@ export function GardenApp() {
   const healthClass = statusClassName(health);
   const careScore = getCareScore(plant, latest, health, dayCycle);
   const careDecision = getCareDecision(plant, latest, weather, health);
+  const plantState = getPlantState(careScore);
+  const needsWater = typeof latest?.soilMoisturePct === "number" && !!plant
+    && latest.soilMoisturePct < plant.targetMoisture - 8;
+  const goodLight = dayCycle.isDay && typeof latest?.lightLux === "number" && !!plant
+    && latest.lightLux >= plant.minLightLux;
+  const tempAlert = typeof latest?.soilTempC === "number" && !!plant
+    && (latest.soilTempC < plant.minSoilTempC || latest.soilTempC > plant.maxSoilTempC);
   const sensorStatus = latest ? "Capteur en ligne" : loading ? "Synchronisation" : "Aucune mesure";
   const plantLocation = plant?.location || weather?.location.label || "Maison";
   const plantSpecies = plant?.species || "Profil botanique";
@@ -1019,9 +1151,28 @@ export function GardenApp() {
     typeof latest?.airTempC === "number"
       ? Math.min(100, Math.max(0, ((latest.airTempC - 5) / 35) * 100))
       : undefined;
+  const weatherHours = useMemo(() => {
+    const hours = weather?.hourly ?? [];
+    if (weatherTrendMode === "sun") {
+      return [...hours]
+        .sort((a, b) => (b.solarRadiationWm2 ?? 0) - (a.solarRadiationWm2 ?? 0))
+        .slice(0, 6)
+        .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+    }
+    if (weatherTrendMode === "rain") {
+      return [...hours]
+        .sort((a, b) => (b.precipitationProbabilityPct ?? 0) - (a.precipitationProbabilityPct ?? 0))
+        .slice(0, 6)
+        .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+    }
+    return hours.slice(0, 6);
+  }, [weather?.hourly, weatherTrendMode]);
+  const goodWateringSlot = weather?.gardening.wateringWindow === "good";
+
+  const tabHidden = (tabs: string[]) => tabs.includes(activeTab) ? "" : "mobileHidden";
 
   return (
-    <main className="shell appShell">
+    <main className="shell appShell" data-tab={activeTab}>
       <section className="topbar appTopbar">
         <div className="brandLockup">
           <span className="brandMark" aria-hidden="true">
@@ -1088,7 +1239,7 @@ export function GardenApp() {
         </div>
       )}
 
-      <section className="heroGrid">
+      <section className={`heroGrid ${tabHidden(["home"])}`}>
         <div className="heroPanel">
           <div className="heroCopy">
             <p className="eyebrow">Sante vivante</p>
@@ -1104,21 +1255,18 @@ export function GardenApp() {
                 Cible {plant?.targetMoisture ?? emptyPlant.targetMoisture}%
               </span>
             </div>
+            <PlantLevel careScore={careScore} />
           </div>
           <div className={`scoreRing ${healthClass}`} style={{ "--score": `${careScore}%` } as CSSProperties}>
             <strong>{careScore}</strong>
             <span>score</span>
           </div>
-          <div className="plantPortrait" aria-hidden="true">
-            <span className="leaf l1" />
-            <span className="leaf l2" />
-            <span className="leaf l3" />
-            <span className="leaf l4" />
-            <span className="stem" />
-            <span className="sensorPod">
-              <span />
-            </span>
-          </div>
+          <AnimatedPlant
+            state={plantState}
+            needsWater={needsWater}
+            goodLight={goodLight}
+            tempAlert={tempAlert}
+          />
         </div>
 
         <aside className={`carePanel ${careDecision.tone}`}>
@@ -1141,13 +1289,15 @@ export function GardenApp() {
         </aside>
       </section>
 
-      <section className="metricGrid">
+      <section className={`metricGrid ${tabHidden(["home", "capteurs"])}`}>
         <Metric
           icon={<Leaf size={19} />}
           label="Humidite sol"
           value={formatPct(latest?.soilMoisturePct)}
           detail={plant ? `cible ${plant.targetMoisture}%` : undefined}
           progress={latest?.soilMoisturePct ?? undefined}
+          series={chartReadings.map((reading) => reading.soilMoisturePct).filter((v): v is number => v != null)}
+          trend={sparkTrend(chartReadings.map((reading) => reading.soilMoisturePct))}
           accent="var(--water)"
         />
         <Metric
@@ -1156,6 +1306,8 @@ export function GardenApp() {
           value={formatTemp(latest?.soilTempC)}
           detail={plant ? `${plant.minSoilTempC}-${plant.maxSoilTempC} C` : undefined}
           progress={soilTempProgress}
+          series={chartReadings.map((reading) => reading.soilTempC).filter((v): v is number => v != null)}
+          trend={sparkTrend(chartReadings.map((reading) => reading.soilTempC))}
           accent="var(--moss)"
         />
         <Metric
@@ -1164,6 +1316,8 @@ export function GardenApp() {
           value={formatTemp(latest?.airTempC)}
           detail={formatPct(latest?.airHumidityPct)}
           progress={airProgress}
+          series={chartReadings.map((reading) => reading.airTempC).filter((v): v is number => v != null)}
+          trend={sparkTrend(chartReadings.map((reading) => reading.airTempC))}
           accent="var(--sky)"
         />
         <Metric
@@ -1172,19 +1326,38 @@ export function GardenApp() {
           value={formatLux(latest?.lightLux)}
           detail={plant ? `min ${plant.minLightLux} lx` : undefined}
           progress={lightProgress}
+          series={chartReadings.map((reading) => reading.lightLux).filter((v): v is number => v != null)}
+          trend={sparkTrend(chartReadings.map((reading) => reading.lightLux))}
           accent="var(--sun)"
         />
       </section>
 
       <div className="dashboardGrid">
         <div className="primaryColumn">
-          <section className={`panel weatherPanel ${weather?.gardening.wateringWindow ?? "good"}`}>
+          <section className={`panel weatherPanel ${weather?.gardening.wateringWindow ?? "good"} ${tabHidden(["meteo"])}`}>
         <div className="panelHeader">
           <div>
             <h2>Meteo jardin</h2>
             <p className="small">{weatherStatus || (weatherLoading ? "Chargement..." : "API site")}</p>
           </div>
           <CloudSun size={20} />
+        </div>
+        <div className="weatherToolbar">
+          <div className="segmentedControl" aria-label="Tendances meteo">
+            <button type="button" className={weatherTrendMode === "next" ? "active" : ""} onClick={() => setWeatherTrendMode("next")}>
+              Prochaines
+            </button>
+            <button type="button" className={weatherTrendMode === "sun" ? "active" : ""} onClick={() => setWeatherTrendMode("sun")}>
+              Lumiere
+            </button>
+            <button type="button" className={weatherTrendMode === "rain" ? "active" : ""} onClick={() => setWeatherTrendMode("rain")}>
+              Pluie
+            </button>
+          </div>
+          <span className={`weatherWindowBadge ${goodWateringSlot ? "good" : "watch"}`}>
+            {goodWateringSlot ? <CheckCircle2 size={14} /> : <Clock size={14} />}
+            {goodWateringSlot ? "bon creneau" : "a verifier"}
+          </span>
         </div>
         <div className="weatherHero">
           <div>
@@ -1213,7 +1386,7 @@ export function GardenApp() {
           <>
             <p className="weatherAdvice">{weather.gardening.summary}</p>
             <div className="weatherHours">
-              {weather.hourly.slice(0, 6).map((hour) => (
+              {weatherHours.map((hour) => (
                 <div className="weatherHour" key={hour.time}>
                   <span>{formatTime(hour.time, timezone)}</span>
                   <strong>{formatTemp(hour.temperatureC)}</strong>
@@ -1225,7 +1398,7 @@ export function GardenApp() {
         )}
           </section>
 
-          <section className="panel">
+          <section className={`panel ${tabHidden(["capteurs"])}`}>
             <div className="panelHeader">
               <h2>Graphiques</h2>
               <BarChart3 size={18} />
@@ -1261,7 +1434,7 @@ export function GardenApp() {
             </div>
           </section>
 
-          <section className="panel photoPanel">
+          <section className={`panel photoPanel ${tabHidden(["plus"])}`}>
             <div className="panelHeader">
               <div>
                 <h2>Galerie photo</h2>
@@ -1273,20 +1446,21 @@ export function GardenApp() {
               <input
                 value={photoTitle}
                 onChange={(event) => setPhotoTitle(event.target.value)}
-                placeholder="Titre de la photo"
+                placeholder="Titre de l'analyse"
                 disabled={photoBusy}
               />
               <label className={`uploadButton ${photoBusy ? "busy" : ""}`}>
                 <Upload size={17} />
-                {photoBusy ? "Analyse..." : "Ajouter"}
+                {photoBusy ? "Analyse..." : "Ajouter vues"}
                 <input
                   type="file"
                   accept="image/png,image/jpeg,image/webp"
+                  multiple
                   disabled={!plant || photoBusy}
                   onChange={(event) => {
-                    const file = event.target.files?.[0] ?? null;
+                    const files = Array.from(event.currentTarget.files ?? []);
                     event.currentTarget.value = "";
-                    void uploadPhoto(file);
+                    void uploadPhotos(files);
                   }}
                 />
               </label>
@@ -1301,6 +1475,16 @@ export function GardenApp() {
                         <strong>{photo.title}</strong>
                         {typeof photo.healthScore === "number" && <span>{photo.healthScore}/100</span>}
                       </div>
+                      {photo.colorTags.length > 0 && (
+                        <div className="photoTags" aria-label="Tags couleur">
+                          {photo.colorTags.slice(0, 4).map((tag) => (
+                            <span className="photoTag" key={tag}>{tag}</span>
+                          ))}
+                          <span className="photoTag score">
+                            {Math.round(photo.colorAnomalyScore * 100)}%
+                          </span>
+                        </div>
+                      )}
                       <p>{photo.analysis}</p>
                       {photo.observations.length > 0 && (
                         <ul>
@@ -1327,7 +1511,7 @@ export function GardenApp() {
             )}
           </section>
 
-          <section className="panel agentPanel">
+          <section className={`panel agentPanel ${tabHidden(["ia"])}`}>
             <div className="panelHeader">
               <h2>Agent IA Autonome</h2>
               <div className="agentHeaderTools">
@@ -1361,118 +1545,57 @@ export function GardenApp() {
                 </button>
               ))}
             </div>
+            {chatThread.length > 0 && (
+              <div className="chatThread">
+                {chatThread.map((turn) => (
+                  <div className={`chatTurn ${turn.role}`} key={turn.id}>
+                    <div className="chatBubble">
+                      {turn.pending && !turn.content
+                        ? <span className="chatTyping">Arborisis reflechit…</span>
+                        : <MarkdownText text={turn.content} />}
+                    </div>
+                    {turn.role === "assistant" && turn.parsed?.mode === "analysis" && (
+                      <AgentCards parsed={turn.parsed} timezone={timezone} />
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
             <textarea
               value={message}
               onChange={(event) => setMessage(event.target.value)}
-              placeholder="Demande une analyse, un planning, une recherche espece ou une action precise..."
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  void askAgent();
+                }
+              }}
+              placeholder="Discute avec l'agent, demande une analyse, un planning, une recherche espece..."
               rows={3}
             />
-            <button className="primaryButton" onClick={askAgent} disabled={!plant || chatBusy}>
+            <button className="primaryButton agentCta" onClick={askAgent} disabled={!plant || chatBusy}>
               <MessageCircle size={18} />
-              {chatBusy ? "Raisonnement en cours..." : "Lancer l'agent"}
+              {chatBusy ? "Raisonnement en cours..." : "Envoyer"}
             </button>
 
-            {parsedAgent && (
-              <div className="agentResult">
-                <div className={`agentDiagnosis ${parsedAgent.diagnosis.severity}`}>
-                  <div className="agentDiagnosisHeader">
-                    <Zap size={16} />
-                    <strong>Diagnostic: {parsedAgent.diagnosis.severity}</strong>
-                    <span className="agentScore">{parsedAgent.healthScore.overall}/100</span>
-                  </div>
-                  <p>{parsedAgent.diagnosis.summary}</p>
-                </div>
-
-                <div className="agentHealthGrid">
-                  <AgentGauge label="Eau" value={parsedAgent.healthScore.moisture} />
-                  <AgentGauge label="Temp." value={parsedAgent.healthScore.temperature} />
-                  <AgentGauge label="Lumiere" value={parsedAgent.healthScore.light} />
-                  <AgentGauge label="Stabilite" value={parsedAgent.healthScore.stability} />
-                </div>
-
-                <div className="agentUserResponse">
-                  <strong>Decision de l'agent</strong>
-                  <p>{parsedAgent.responseToUser}</p>
-                </div>
-
-                {parsedAgent.actions.length > 0 && (
-                  <div className="agentActions">
-                    <strong>Actions proposees</strong>
-                    {parsedAgent.actions.map((action, i) => (
-                      <div className={`agentAction ${action.urgency}`} key={i}>
-                        <div className="agentActionHeader">
-                          <Droplets size={14} />
-                          <span className="agentActionUrgency">{action.urgency}</span>
-                          <span>{action.description}</span>
-                        </div>
-                        <p className="small">{action.rationale}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {parsedAgent.plan.length > 0 && (
-                  <div className="agentPlan">
-                    <strong>Planning</strong>
-                    {parsedAgent.plan.map((task, i) => (
-                      <div className={`agentTask ${task.priority}`} key={`${task.title}-${i}`}>
-                        <div>
-                          <span className="agentTaskDate">{formatDateTime(task.dueAt, timezone)}</span>
-                          <strong>{task.title}</strong>
-                        </div>
-                        <p className="small">{task.successCriteria}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {(parsedAgent.sources.length > 0 || parsedAgent.tools.length > 0) && (
-                  <div className="agentEvidence">
-                    {parsedAgent.sources.length > 0 && (
-                      <div>
-                        <strong>Sources</strong>
-                        <div className="sourceList">
-                          {parsedAgent.sources.map((source) => (
-                            <a href={source.url} target="_blank" rel="noreferrer" key={source.url}>
-                              <Globe2 size={14} />
-                              <span>{source.title}</span>
-                            </a>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {parsedAgent.tools.length > 0 && (
-                      <div>
-                        <strong>Outils</strong>
-                        <div className="toolList">
-                          {parsedAgent.tools.map((tool) => (
-                            <span key={tool}>{tool}</span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-
+            {answer && (
+              <>
                 <button
                   className="agentToggle"
                   onClick={() => setShowReasoning((s) => !s)}
                 >
                   {showReasoning ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  {showReasoning ? "Masquer le raisonnement" : "Voir le raisonnement complet"}
+                  {showReasoning ? "Masquer le detail brut" : "Voir le detail brut de la derniere reponse"}
                 </button>
-              </div>
+                {showReasoning && <div className="answer reasoning">{answer}</div>}
+              </>
             )}
-
-            {answer && showReasoning && (
-              <div className="answer reasoning">{answer}</div>
-            )}
-            {answer && !parsedAgent && <div className="answer">{answer}</div>}
           </section>
         </div>
 
         <aside className="sideColumn">
-          <section className="panel">
+          <section className={`panel ${tabHidden(["ia"])}`}>
             <div className="panelHeader">
               <h2>Insights IA</h2>
               <div className="insightHeaderMeta">
@@ -1491,14 +1614,16 @@ export function GardenApp() {
           </section>
 
           {plant?.id && (
+            <div className={tabHidden(["ia"])}>
             <MLIntelligencePanel
               plantId={plant.id}
               weatherLocation={(weatherLocation.trim() || plant.location) ?? undefined}
               timezone={timezone}
             />
+            </div>
           )}
 
-          <section className="panel calendarPanel">
+          <section className={`panel calendarPanel ${tabHidden(["plus"])}`}>
         <div className="panelHeader">
           <div>
             <h2>Calendrier</h2>
@@ -1544,7 +1669,7 @@ export function GardenApp() {
             placeholder="Notes"
             rows={2}
           />
-          <button className="secondaryButton" onClick={saveCalendarEvent} disabled={!plant || calendarBusy}>
+          <button className="secondaryButton calendarAddButton" onClick={saveCalendarEvent} disabled={!plant || calendarBusy}>
             <Plus size={17} />
             Ajouter au planning
           </button>
@@ -1563,7 +1688,7 @@ export function GardenApp() {
               </div>
               <div className="calendarActions">
                 <button
-                  className="iconButton smallIcon"
+                  className={`statusCheck ${event.status === "done" ? "checked" : ""}`}
                   onClick={() => void updateCalendarStatus(event.id, event.status === "done" ? "planned" : "done")}
                   aria-label={event.status === "done" ? "Remettre a planifier" : "Marquer fait"}
                   title={event.status === "done" ? "Remettre a planifier" : "Marquer fait"}
@@ -1584,7 +1709,7 @@ export function GardenApp() {
         </div>
           </section>
 
-          <section className="panel cyclePanel">
+          <section className={`panel cyclePanel ${tabHidden(["meteo"])}`}>
         <div className="panelHeader">
           <h2>Cycle jour nuit</h2>
           {dayCycle.isDay ? <Sun size={18} /> : <Moon size={18} />}
@@ -1611,7 +1736,7 @@ export function GardenApp() {
         </div>
           </section>
 
-          <section className="panel">
+          <section className={`panel ${tabHidden(["plus"])}`}>
         <div className="panelHeader">
           <h2>Connexion produit</h2>
           <Wifi size={18} />
@@ -1638,7 +1763,7 @@ export function GardenApp() {
         )}
           </section>
 
-          <section className="panel">
+          <section className={`panel ${tabHidden(["plus"])}`}>
         <div className="panelHeader">
           <h2>Alertes</h2>
           <AlertTriangle size={18} />
@@ -1657,7 +1782,7 @@ export function GardenApp() {
         )}
           </section>
 
-          <section className="panel">
+          <section className={`panel ${tabHidden(["plus"])}`}>
         <div className="panelHeader">
           <h2>Profil plante</h2>
           <div className="profileActions">
@@ -1707,7 +1832,7 @@ export function GardenApp() {
         {calibrationMessage && <p className="calibrationNote">{calibrationMessage}</p>}
           </section>
 
-          <section className="history panel">
+          <section className={`history panel ${tabHidden(["capteurs"])}`}>
         <div className="historyHeader">
           <h2>Historique</h2>
           <Clock size={17} />
@@ -1722,8 +1847,267 @@ export function GardenApp() {
           </section>
         </aside>
       </div>
+
+      <nav className="bottomNav" aria-label="Navigation principale">
+        <button
+          type="button"
+          className={`navItem ${activeTab === "home" ? "active" : ""}`}
+          onClick={() => setActiveTab("home")}
+          aria-label="Accueil"
+        >
+          <Home size={22} strokeWidth={activeTab === "home" ? 2.5 : 1.8} />
+          <span>Accueil</span>
+        </button>
+        <button
+          type="button"
+          className={`navItem ${activeTab === "capteurs" ? "active" : ""}`}
+          onClick={() => setActiveTab("capteurs")}
+          aria-label="Capteurs"
+        >
+          <Activity size={22} strokeWidth={activeTab === "capteurs" ? 2.5 : 1.8} />
+          <span>Capteurs</span>
+        </button>
+        <button
+          type="button"
+          className={`navItem ${activeTab === "meteo" ? "active" : ""}`}
+          onClick={() => setActiveTab("meteo")}
+          aria-label="Météo"
+        >
+          <CloudSun size={22} strokeWidth={activeTab === "meteo" ? 2.5 : 1.8} />
+          <span>Météo</span>
+        </button>
+        <button
+          type="button"
+          className={`navItem ${activeTab === "ia" ? "active" : ""}`}
+          onClick={() => setActiveTab("ia")}
+          aria-label="Agent IA"
+        >
+          <BrainCircuit size={22} strokeWidth={activeTab === "ia" ? 2.5 : 1.8} />
+          <span>Agent IA</span>
+        </button>
+        <button
+          type="button"
+          className={`navItem ${activeTab === "plus" ? "active" : ""}`}
+          onClick={() => setActiveTab("plus")}
+          aria-label="Plus"
+        >
+          <MoreHorizontal size={22} strokeWidth={activeTab === "plus" ? 2.5 : 1.8} />
+          <span>Plus</span>
+        </button>
+      </nav>
     </main>
   );
+}
+
+type PlantState = "thriving" | "good" | "watch" | "stressed" | "critical";
+
+function getPlantState(score: number): PlantState {
+  if (score >= 85) return "thriving";
+  if (score >= 70) return "good";
+  if (score >= 50) return "watch";
+  if (score >= 30) return "stressed";
+  return "critical";
+}
+
+function getPlantLevel(score: number) {
+  if (score >= 85) return { level: 5, name: "Florissante", emoji: "🌸", xp: score - 85, range: 14 };
+  if (score >= 70) return { level: 4, name: "Robuste",     emoji: "🌳", xp: score - 70, range: 15 };
+  if (score >= 50) return { level: 3, name: "Plante",      emoji: "🪴", xp: score - 50, range: 20 };
+  if (score >= 30) return { level: 2, name: "Pousse",      emoji: "🌿", xp: score - 30, range: 20 };
+  return              { level: 1, name: "Graine",      emoji: "🌱", xp: score,      range: 30 };
+}
+
+function AnimatedPlant({
+  state,
+  needsWater,
+  goodLight,
+  tempAlert
+}: {
+  state: PlantState;
+  needsWater: boolean;
+  goodLight: boolean;
+  tempAlert: boolean;
+}) {
+  return (
+    <div className="plantPortrait" aria-hidden="true" data-plant-state={state}>
+      <svg className="plantSvg" viewBox="0 0 168 190" xmlns="http://www.w3.org/2000/svg">
+
+        {/* Floating sparkle particles — visible when thriving */}
+        <g className="plantParticles">
+          <circle className="plantParticle" cx="32"  cy="78"  r="3"   />
+          <circle className="plantParticle" cx="136" cy="68"  r="2"   />
+          <circle className="plantParticle" cx="74"  cy="22"  r="2.5" />
+          <circle className="plantParticle" cx="50"  cy="112" r="2"   />
+          <circle className="plantParticle" cx="118" cy="100" r="1.5" />
+          <circle className="plantParticle" cx="96"  cy="36"  r="1.5" />
+        </g>
+
+        {/* Water-drop indicator (low moisture) */}
+        {needsWater && (
+          <g>
+            <path className="waterDrop wd1"
+              d="M 148,38 C 148,34 142.5,27.5 142,22 C 141.5,17 144,14 148,14 C 152,14 154.5,17 154,22 C 153.5,27.5 148,34 148,38 Z" />
+            <path className="waterDrop wd2"
+              d="M 158,57 C 158,53 152.5,46.5 152,41 C 151.5,36 154,33 158,33 C 162,33 164.5,36 164,41 C 163.5,46.5 158,53 158,57 Z" />
+            <path className="waterDrop wd3"
+              d="M 138,60 C 138,57 134,52 133.5,48 C 133,44 135,42 138,42 C 141,42 143,44 142.5,48 C 142,52 138,57 138,60 Z" />
+          </g>
+        )}
+
+        {/* Sun indicator (good light during day) */}
+        {goodLight && (
+          <g>
+            <circle className="sunCore" cx="20" cy="22" r="7" />
+            {[0, 45, 90, 135, 180, 225, 270, 315].map((deg, i) => {
+              const r = Math.PI / 180 * deg;
+              return (
+                <line key={i} className="sunRay"
+                  x1={20 + Math.cos(r) * 10} y1={22 + Math.sin(r) * 10}
+                  x2={20 + Math.cos(r) * 14} y2={22 + Math.sin(r) * 14}
+                  strokeWidth="1.5" />
+              );
+            })}
+          </g>
+        )}
+
+        {/* Temperature alert indicator */}
+        {tempAlert && (
+          <g>
+            <rect className="tempGlass" x="150" y="68" width="8" height="18" rx="4" strokeWidth="1.5" />
+            <circle className="tempBulb" cx="154" cy="88" r="5" />
+            <rect className="tempMercury" x="152" y="72" width="4" height="12" rx="2" fill="#f97316" />
+          </g>
+        )}
+
+        {/* Stem */}
+        <path className="plantStem"
+          d="M 84,148 Q 82,122 84,98 Q 86,78 84,56"
+          strokeWidth="4.5" fill="none" strokeLinecap="round" />
+
+        {/* Leaf 5 — small top */}
+        <g className="plantLeafGroup lg5">
+          <path className="plantLeaf pl5"
+            d="M 84,70 C 78,58 66,44 58,40 C 66,54 78,64 84,70 Z" />
+          <path className="plantVein" d="M 84,70 C 76,58 66,46 58,40" fill="none" strokeWidth="0.8" />
+        </g>
+
+        {/* Leaf 1 — upper left */}
+        <g className="plantLeafGroup lg1">
+          <path className="plantLeaf pl1"
+            d="M 82,92 C 74,72 50,54 26,53 C 50,78 70,86 82,92 Z" />
+          <path className="plantVein" d="M 82,92 C 68,76 48,60 26,53" fill="none" strokeWidth="0.9" />
+        </g>
+
+        {/* Leaf 2 — upper right */}
+        <g className="plantLeafGroup lg2">
+          <path className="plantLeaf pl2"
+            d="M 86,88 C 94,68 120,54 144,51 C 120,76 100,84 86,88 Z" />
+          <path className="plantVein" d="M 86,88 C 96,70 120,56 144,51" fill="none" strokeWidth="0.9" />
+        </g>
+
+        {/* Leaf 3 — mid left */}
+        <g className="plantLeafGroup lg3">
+          <path className="plantLeaf pl3"
+            d="M 82,114 C 62,104 38,95 20,100 C 38,112 62,116 82,114 Z" />
+          <path className="plantVein" d="M 82,114 C 62,104 38,96 20,100" fill="none" strokeWidth="0.9" />
+        </g>
+
+        {/* Leaf 4 — mid right */}
+        <g className="plantLeafGroup lg4">
+          <path className="plantLeaf pl4"
+            d="M 86,118 C 106,107 130,100 150,106 C 130,116 106,120 86,118 Z" />
+          <path className="plantVein" d="M 86,118 C 106,108 130,101 150,106" fill="none" strokeWidth="0.9" />
+        </g>
+
+        {/* Pot */}
+        <path className="plantPotBody" d="M 44,154 L 36,182 L 132,182 L 124,154 Z" />
+        <ellipse className="plantPotRim" cx="84" cy="154" rx="40" ry="7" />
+        <ellipse className="plantSoil"   cx="84" cy="150" rx="36" ry="5.5" />
+
+        {/* Sensor pod */}
+        <rect className="sensorPodRect" x="65" y="125" width="38" height="21" rx="7" />
+        <circle className="sensorDotSvg" cx="84" cy="135" r="5" />
+      </svg>
+    </div>
+  );
+}
+
+function PlantLevel({ careScore }: { careScore: number }) {
+  const lv = getPlantLevel(careScore);
+  const xpPct = Math.round(Math.min(100, (lv.xp / lv.range) * 100));
+  return (
+    <div className="plantLevelBadge">
+      <span className="plantLevelEmoji">{lv.emoji}</span>
+      <div className="plantLevelInfo">
+        <div className="plantLevelHeader">
+          <span className="plantLevelName">{lv.name}</span>
+          <span className="plantLevelNum">Niv. {lv.level}</span>
+        </div>
+        <div className="plantXpBar">
+          <div className="plantXpFill" style={{ width: `${xpPct}%` }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function renderInline(text: string): React.ReactNode {
+  const segments = text.split(/(\*\*[^*\n]+\*\*)/g);
+  if (segments.length === 1) return text;
+  return (
+    <>
+      {segments.map((seg, i) =>
+        seg.startsWith("**") && seg.endsWith("**")
+          ? <strong key={i}>{seg.slice(2, -2)}</strong>
+          : <span key={i}>{seg}</span>
+      )}
+    </>
+  );
+}
+
+function MarkdownText({ text }: { text: string }) {
+  const blocks: React.ReactNode[] = [];
+  const lines = text.split("\n");
+  let listItems: string[] = [];
+
+  const flushList = (key: string) => {
+    if (!listItems.length) return;
+    blocks.push(
+      <ul key={key} style={{ paddingLeft: "1.2em", margin: "0.25em 0" }}>
+        {listItems.map((item, i) => <li key={i}>{renderInline(item)}</li>)}
+      </ul>
+    );
+    listItems = [];
+  };
+
+  lines.forEach((line, idx) => {
+    const key = String(idx);
+    if (/^##\s/.test(line)) {
+      flushList(`ul-${idx}`);
+      blocks.push(
+        <strong key={key} style={{ display: "block", marginTop: "0.6em", marginBottom: "0.15em", color: "var(--ink)" }}>
+          {renderInline(line.replace(/^##\s/, ""))}
+        </strong>
+      );
+    } else if (/^###\s/.test(line)) {
+      flushList(`ul-${idx}`);
+      blocks.push(
+        <em key={key} style={{ display: "block", marginTop: "0.4em", fontStyle: "normal", color: "var(--ink-2)" }}>
+          {renderInline(line.replace(/^###\s/, ""))}
+        </em>
+      );
+    } else if (/^[-*]\s/.test(line)) {
+      listItems.push(line.slice(2));
+    } else if (!line.trim()) {
+      flushList(`ul-${idx}`);
+    } else {
+      flushList(`ul-${idx}`);
+      blocks.push(<p key={key} style={{ margin: "0.2em 0" }}>{renderInline(line)}</p>);
+    }
+  });
+  flushList("ul-end");
+
+  return <>{blocks}</>;
 }
 
 function AgentGauge({ label, value }: { label: string; value: number }) {
@@ -1739,12 +2123,130 @@ function AgentGauge({ label, value }: { label: string; value: number }) {
   );
 }
 
+function AgentCards({ parsed, timezone }: { parsed: ParsedAgentResponse; timezone: string }) {
+  return (
+    <div className="agentResult">
+      <div className={`agentDiagnosis ${parsed.diagnosis.severity}`}>
+        <div className="agentDiagnosisHeader">
+          <Zap size={16} />
+          <strong>Diagnostic: {parsed.diagnosis.severity}</strong>
+          <span className="agentScore">{parsed.healthScore.overall}/100</span>
+        </div>
+        <p>{parsed.diagnosis.summary}</p>
+      </div>
+
+      <div className="agentHealthGrid">
+        <AgentGauge label="Eau" value={parsed.healthScore.moisture} />
+        <AgentGauge label="Temp." value={parsed.healthScore.temperature} />
+        <AgentGauge label="Lumiere" value={parsed.healthScore.light} />
+        <AgentGauge label="Stabilite" value={parsed.healthScore.stability} />
+      </div>
+
+      {parsed.actions.length > 0 && (
+        <div className="agentActions">
+          <strong>Actions proposees</strong>
+          {parsed.actions.map((action, i) => (
+            <div className={`agentAction ${action.urgency}`} key={i}>
+              <div className="agentActionHeader">
+                <Droplets size={14} />
+                <span className="agentActionUrgency">{action.urgency}</span>
+                <span>{action.description}</span>
+              </div>
+              <p className="small">{action.rationale}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {parsed.plan.length > 0 && (
+        <div className="agentPlan">
+          <strong>Planning</strong>
+          {parsed.plan.map((task, i) => (
+            <div className={`agentTask ${task.priority}`} key={`${task.title}-${i}`}>
+              <div>
+                <span className="agentTaskDate">{formatDateTime(task.dueAt, timezone)}</span>
+                <strong>{task.title}</strong>
+              </div>
+              <p className="small">{task.successCriteria}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {(parsed.sources.length > 0 || parsed.tools.length > 0) && (
+        <div className="agentEvidence">
+          {parsed.sources.length > 0 && (
+            <div>
+              <strong>Sources</strong>
+              <div className="sourceList">
+                {parsed.sources.map((source) => (
+                  <a href={source.url} target="_blank" rel="noreferrer" key={source.url}>
+                    <Globe2 size={14} />
+                    <span>{source.title}</span>
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+          {parsed.tools.length > 0 && (
+            <div>
+              <strong>Outils</strong>
+              <div className="toolList">
+                {parsed.tools.map((tool) => (
+                  <span key={tool}>{tool}</span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function sparkTrend(values: Array<number | null | undefined>): string | undefined {
+  const clean = values.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  if (clean.length < 3) return undefined;
+  const head = clean.slice(0, Math.ceil(clean.length / 2));
+  const tail = clean.slice(Math.floor(clean.length / 2));
+  const avg = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length;
+  const delta = avg(tail) - avg(head);
+  const ref = Math.max(1e-6, Math.abs(avg(head)));
+  if (Math.abs(delta) / ref < 0.03) return "— stable";
+  return delta > 0 ? "▲ hausse" : "▼ baisse";
+}
+
+function MetricSpark({ series }: { series: number[] }) {
+  const clean = series.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  if (clean.length < 2) return null;
+  const w = 120;
+  const h = 32;
+  const min = Math.min(...clean);
+  const max = Math.max(...clean);
+  const range = Math.max(1e-6, max - min);
+  const pts = clean.map((value, index) => {
+    const x = (index / (clean.length - 1)) * w;
+    const y = h - 2 - ((value - min) / range) * (h - 4);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const line = pts.join(" ");
+  const area = `0,${h} ${line} ${w},${h}`;
+  return (
+    <svg className="metricSpark" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" role="img" aria-hidden="true">
+      <polygon points={area} className="metricSparkArea" />
+      <polyline points={line} className="metricSparkLine" />
+    </svg>
+  );
+}
+
 function Metric({
   icon,
   label,
   value,
   detail,
   progress,
+  series,
+  trend,
   accent = "var(--leaf)"
 }: {
   icon: ReactNode;
@@ -1752,21 +2254,31 @@ function Metric({
   value: string;
   detail?: string;
   progress?: number;
+  series?: number[];
+  trend?: string;
   accent?: string;
 }) {
   const boundedProgress = typeof progress === "number" ? Math.max(0, Math.min(100, progress)) : null;
+  const hasSpark = Array.isArray(series) && series.length >= 2;
 
   return (
     <article className="metric" style={{ "--metric-accent": accent } as CSSProperties}>
-      <div className="metricIcon">{icon}</div>
-      <span>{label}</span>
+      <div className="metricTop">
+        <div className="metricIcon">{icon}</div>
+        {trend && <span className="metricTrend">{trend}</span>}
+      </div>
       <strong>{value}</strong>
-      {detail && <small>{detail}</small>}
-      {boundedProgress !== null && (
+      <div className="metricMeta">
+        <span>{label}</span>
+        {detail && <small>{detail}</small>}
+      </div>
+      {hasSpark ? (
+        <MetricSpark series={series!} />
+      ) : boundedProgress !== null ? (
         <div className="metricBar" aria-hidden="true">
           <span style={{ width: `${boundedProgress}%` }} />
         </div>
-      )}
+      ) : null}
     </article>
   );
 }
@@ -1856,6 +2368,28 @@ function MiniChart({
         <div className="chartEmpty">Pas encore assez de donnees</div>
       )}
     </article>
+  );
+}
+
+function getPhotoBaseTitle(file: File) {
+  return file.name.replace(/\.[^.]+$/, "").trim() || "Photo plante";
+}
+
+function limitPhotoTitle(title: string) {
+  const trimmed = title.trim();
+  return trimmed.length > 90 ? `${trimmed.slice(0, 87).trimEnd()}...` : trimmed;
+}
+
+function buildPhotoUploadTitle(file: File, index: number, total: number, batchTitle: string) {
+  const cleanedBatchTitle = batchTitle.trim();
+  if (total === 1) {
+    return limitPhotoTitle(cleanedBatchTitle || getPhotoBaseTitle(file));
+  }
+
+  return limitPhotoTitle(
+    cleanedBatchTitle
+      ? `${cleanedBatchTitle} - vue ${index + 1}`
+      : `${getPhotoBaseTitle(file)} - vue ${index + 1}`
   );
 }
 

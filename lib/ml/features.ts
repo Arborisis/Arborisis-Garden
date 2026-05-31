@@ -7,6 +7,16 @@ function clamp(v: number, min = 0, max = 1): number {
   return Math.max(min, Math.min(max, v))
 }
 
+function parseJsonStringArray(value: string | null | undefined): string[] {
+  if (!value) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.map(String) : []
+  } catch {
+    return []
+  }
+}
+
 function linearSlope(times: number[], values: number[]): number {
   const n = values.length
   if (n < 2) return 0
@@ -105,13 +115,19 @@ export function extractFeatures(
       new Date(b.takenAt ?? b.createdAt).getTime() - new Date(a.takenAt ?? a.createdAt).getTime()
     )
   const latestPhoto = scoredPhotos[0]
+  const latestAnyPhoto = [...photos].sort((a, b) =>
+    new Date(b.takenAt ?? b.createdAt).getTime() - new Date(a.takenAt ?? a.createdAt).getTime()
+  )[0]
 
   const photoHealth = latestPhoto ? clamp(latestPhoto.healthScore! / 100) : 0.5
   const photoConfidence = latestPhoto?.confidence ?? 0
-  const photoAgeDays = latestPhoto
-    ? (now - new Date(latestPhoto.takenAt ?? latestPhoto.createdAt).getTime()) / 86_400_000
+  const photoAgeDays = latestAnyPhoto
+    ? (now - new Date(latestAnyPhoto.takenAt ?? latestAnyPhoto.createdAt).getTime()) / 86_400_000
     : Infinity
   const photoFreshness = photoAgeDays < Infinity ? clamp(Math.exp(-photoAgeDays / 30)) : 0
+  const photoColorAnomalyScore = clamp(latestAnyPhoto?.colorAnomalyScore ?? 0)
+  const photoColorAnomalyConfidence = clamp(latestAnyPhoto?.colorAnomalyConfidence ?? 0)
+  const photoSpotCountNorm = clamp(parseJsonStringArray(latestAnyPhoto?.colorTags).length / 6)
 
   // ---- LLM Insights ----
   const total = insights.length
@@ -149,6 +165,9 @@ export function extractFeatures(
     photoHealth,
     photoConfidence,
     photoFreshness,
+    photoColorAnomalyScore,
+    photoColorAnomalyConfidence,
+    photoSpotCountNorm,
     insightGoodRatio,
     insightWatchRatio,
     insightUrgentRatio,

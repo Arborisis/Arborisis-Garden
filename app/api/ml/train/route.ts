@@ -2,12 +2,47 @@ import { NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
 import { z } from "zod"
 import { trainWeights } from "@/lib/ml/trainer"
+import { mixtureWeights } from "@/lib/ml/model"
 import { DEFAULT_WEIGHTS, type ModelWeights, type TrainingSample } from "@/lib/ml/types"
 
 const bodySchema = z.object({
   plantId: z.string().optional(),
-  epochs: z.number().int().min(5).max(100).optional()
+  epochs: z.number().int().min(5).max(2000).optional()
 })
+
+function safeJsonParse(value: string | null): unknown {
+  if (!value) return null
+  try { return JSON.parse(value) } catch { return null }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+function safeMixtureWeights(rawWeights: string) {
+  return mixtureWeights(safeJsonParse(rawWeights) ?? DEFAULT_WEIGHTS)
+}
+
+function safeMetrics(rawMetrics: string | null) {
+  const parsed = safeJsonParse(rawMetrics)
+  if (!isRecord(parsed)) return null
+  const rmse = finiteNumber(parsed.rmse)
+  const mae = finiteNumber(parsed.mae)
+  if (rmse === undefined || mae === undefined) return null
+
+  return {
+    rmse,
+    mae,
+    valRmse: finiteNumber(parsed.valRmse),
+    epochs: finiteNumber(parsed.epochs),
+    residualKind: typeof parsed.residualKind === "string" ? parsed.residualKind : undefined,
+    adopted: typeof parsed.adopted === "boolean" ? parsed.adopted : undefined
+  }
+}
 
 async function getCurrentWeights(): Promise<ModelWeights> {
   const active = await prisma.mLModelVersion.findFirst({
@@ -24,7 +59,7 @@ export async function POST(req: Request) {
   const parsed = bodySchema.safeParse(body)
   if (!parsed.success) return NextResponse.json({ error: "Paramètres invalides" }, { status: 400 })
 
-  const { plantId, epochs = 30 } = parsed.data
+  const { plantId, epochs = 300 } = parsed.data
 
   const rawSamples = await prisma.mLTrainingSample.findMany({
     where: plantId ? { plantId } : {},
@@ -68,7 +103,14 @@ export async function POST(req: Request) {
       version,
       sampleCount: result.sampleCount,
       weights: JSON.stringify(result.weights),
-      metrics: JSON.stringify({ rmse: result.rmse, mae: result.mae, epochs: result.epochs }),
+      metrics: JSON.stringify({
+        rmse: result.rmse,
+        mae: result.mae,
+        valRmse: result.valRmse,
+        epochs: result.epochs,
+        residualKind: result.residualKind,
+        adopted: result.adopted
+      }),
       isActive: true
     }
   })
@@ -85,7 +127,13 @@ export async function POST(req: Request) {
     trainedAt: newVersion.trainedAt,
     sampleCount: result.sampleCount,
     epochs: result.epochs,
-    metrics: { rmse: result.rmse, mae: result.mae },
+    metrics: {
+      rmse: result.rmse,
+      mae: result.mae,
+      valRmse: result.valRmse,
+      residualKind: result.residualKind,
+      adopted: result.adopted
+    },
     weights: result.weights,
     previousWeights: initialWeights
   })
@@ -105,8 +153,8 @@ export async function GET() {
       trainedAt: v.trainedAt,
       sampleCount: v.sampleCount,
       isActive: v.isActive,
-      weights: JSON.parse(v.weights),
-      metrics: v.metrics ? JSON.parse(v.metrics) : null
+      weights: safeMixtureWeights(v.weights),
+      metrics: safeMetrics(v.metrics)
     }))
   })
 }

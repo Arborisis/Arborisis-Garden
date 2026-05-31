@@ -2,6 +2,24 @@
 
 MicroPython firmware for Raspberry Pi Pico WH + Grove Shield for Pi Pico v1.
 
+## What's new in 0.2.0
+
+- **Hardware watchdog** (`WDT`, ~8 s) auto-recovers from hangs; the main loop is
+  wrapped so a single bad cycle never bricks the device.
+- **Offline buffering**: up to `OFFLINE_BUFFER_MAX` readings are cached in RAM
+  while the API is unreachable and flushed (oldest-first) once it returns. 4xx
+  responses (bad token / validation) are dropped instead of retried forever.
+- **NTP time sync** stamps each reading with an ISO-8601 `recordedAt`, improving
+  server-side idempotency `(deviceSerial, recordedAt)`. Re-syncs every 6 h.
+- **Median-filtered ADC** for soil moisture and battery to reject sampling noise.
+- **TSL2561 auto-gain** with saturation handling for a much wider lux range.
+- **Wi-Fi reconnect with capped exponential backoff** instead of busy-looping.
+- **Status LED**: blinks while associating, solid in setup mode, double-blink
+  heartbeat each successful cycle.
+- **Diagnostics**: `gc.collect()` each cycle plus a `GET /api/diagnostics`
+  endpoint and a richer local dashboard (uptime, queue depth, POST counters,
+  free RAM, clock status, battery %).
+
 ## Wiring
 
 - Grove Shield power switch: 3.3V.
@@ -20,6 +38,12 @@ MicroPython firmware for Raspberry Pi Pico WH + Grove Shield for Pi Pico v1.
    - Wi-Fi SSID/password.
    - API URL, for example `http://YOUR_MAC_IP:3000/api/telemetry`.
    - Device token matching `DEVICE_INGEST_TOKEN`.
+
+## Battery monitoring (optional)
+
+Set `BATTERY_ADC_PIN = 29` in `config.py` to read VSYS through the Pico's
+internal 3:1 divider (keep `BATTERY_DIVIDER = 3.0`). The dashboard then shows a
+battery percentage derived from `BATTERY_EMPTY_MV`/`BATTERY_FULL_MV`.
 
 ## Calibration
 
