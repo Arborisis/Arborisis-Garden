@@ -3,19 +3,85 @@ import { prisma } from "@/lib/prisma"
 import { z } from "zod"
 import { extractFeatures } from "@/lib/ml/features"
 import { predict } from "@/lib/ml/model"
-import { DEFAULT_WEIGHTS, type ModelWeights } from "@/lib/ml/types"
+import { onlineUpdate } from "@/lib/ml/online"
+import { DEFAULT_WEIGHTS, type ModelWeights, type TrainingSample } from "@/lib/ml/types"
 
 const bodySchema = z.object({
   plantId: z.string().optional()
 })
 
-async function getActiveWeights(): Promise<ModelWeights> {
+// How many recent samples feed the real-time online refinement step.
+const ONLINE_BUFFER = 80
+
+type ActiveVersion = { id: string; weights: ModelWeights; metrics: Record<string, unknown> }
+
+async function getActiveVersion(): Promise<ActiveVersion | null> {
   const active = await prisma.mLModelVersion.findFirst({
     where: { isActive: true },
     orderBy: { trainedAt: "desc" }
   })
-  if (!active) return DEFAULT_WEIGHTS
-  try { return JSON.parse(active.weights) as ModelWeights } catch { return DEFAULT_WEIGHTS }
+  if (!active) return null
+  let weights: ModelWeights = DEFAULT_WEIGHTS
+  let metrics: Record<string, unknown> = {}
+  try { weights = JSON.parse(active.weights) as ModelWeights } catch {}
+  try {
+    const m = active.metrics ? JSON.parse(active.metrics) : {}
+    if (m && typeof m === "object") metrics = m as Record<string, unknown>
+  } catch {}
+  return { id: active.id, weights, metrics }
+}
+
+/**
+ * Real-time refinement: nudge the active model toward the most recent labeled
+ * samples. The online learner self-gates (it rolls back if it doesn't help), so
+ * this is safe to run on every collection. Returns whether weights changed.
+ */
+async function refineOnline(plantId: string | undefined): Promise<{ applied: boolean; errorBefore?: number; errorAfter?: number }> {
+  const active = await getActiveVersion()
+  if (!active) return { applied: false }
+
+  const recent = await prisma.mLTrainingSample.findMany({
+    where: plantId ? { plantId } : {},
+    orderBy: { sampledAt: "desc" },
+    take: ONLINE_BUFFER
+  })
+  const buffer: TrainingSample[] = recent.flatMap((s: { features: string; label: number; plantId: string; sampledAt: Date; photoId: string | null }) => {
+    try {
+      return [{
+        features: JSON.parse(s.features),
+        label: s.label,
+        plantId: s.plantId,
+        sampledAt: s.sampledAt.toISOString(),
+        photoId: s.photoId ?? ""
+      } satisfies TrainingSample]
+    } catch {
+      return []
+    }
+  })
+
+  const result = onlineUpdate(active.weights, buffer)
+  if (!result.applied) return { applied: false, errorBefore: result.errorBefore, errorAfter: result.errorAfter }
+
+  const onlineSteps = (typeof active.metrics.onlineSteps === "number" ? active.metrics.onlineSteps : 0) + 1
+  await prisma.mLModelVersion.update({
+    where: { id: active.id },
+    data: {
+      weights: JSON.stringify(result.weights),
+      metrics: JSON.stringify({
+        ...active.metrics,
+        onlineSteps,
+        onlineErrorBefore: result.errorBefore,
+        onlineErrorAfter: result.errorAfter,
+        lastOnlineAt: new Date().toISOString()
+      })
+    }
+  })
+  return { applied: true, errorBefore: result.errorBefore, errorAfter: result.errorAfter }
+}
+
+async function getActiveWeights(): Promise<ModelWeights> {
+  const active = await getActiveVersion()
+  return active?.weights ?? DEFAULT_WEIGHTS
 }
 
 export async function POST(req: Request) {
@@ -105,11 +171,15 @@ export async function POST(req: Request) {
     created++
   }
 
-  console.log(JSON.stringify({ route: "POST /api/ml/collect", plantId, created, skipped, latencyMs: Date.now() - start, status: 200 }))
+  // Real-time online refinement on the freshly enlarged sample set.
+  const online = created > 0 ? await refineOnline(plantId) : { applied: false }
+
+  console.log(JSON.stringify({ route: "POST /api/ml/collect", plantId, created, skipped, onlineApplied: online.applied, latencyMs: Date.now() - start, status: 200 }))
   return NextResponse.json({
     created,
     skipped,
     total: photos.length,
-    message: `${created} échantillons créés, ${skipped} déjà existants`
+    online,
+    message: `${created} échantillons créés, ${skipped} déjà existants${online.applied ? " — modèle affiné en temps réel" : ""}`
   })
 }

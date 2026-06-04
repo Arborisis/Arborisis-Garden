@@ -4,6 +4,10 @@ import { parseAiInsightsResponse } from "../lib/insights";
 import { analyzeStoredBioReadings } from "../lib/bioelectric/adaptive-model";
 import { detectEnvironmentEvents } from "../lib/bioelectric/analysis";
 import { computeCoupling } from "../lib/bioelectric/coupling";
+import { trainWeights } from "../lib/ml/trainer";
+import { onlineUpdate } from "../lib/ml/online";
+import { predict } from "../lib/ml/model";
+import { DEFAULT_WEIGHTS, type MLFeatures, type TrainingSample } from "../lib/ml/types";
 import type { BioReading } from "@prisma/client";
 
 const payload = telemetrySchema.parse({
@@ -195,6 +199,103 @@ const bioForCoupling = Array.from({ length: 25 }, (_, k) => {
 const coupling = computeCoupling(bioForCoupling, envSeries);
 if (coupling.dominant?.channel !== "lightLux" || coupling.dominant.correlation < 0.5) {
   throw new Error(`Expected light to dominate coupling, got ${JSON.stringify(coupling.dominant)}`);
+}
+
+// ---- ML: entraînement par lot + apprentissage en ligne (temps réel) --------
+
+function mkFeatures(moisture: number, light: number): MLFeatures {
+  return {
+    moistureNormalized: Math.min(1, moisture / 50),
+    moistureDeviation: Math.abs(moisture - 50) / 50,
+    moistureTrendNorm: 0.5,
+    moistureVolatility: 0.1,
+    soilTempScore: 0.9,
+    airTempNorm: 0.5,
+    airHumidityNorm: 0.5,
+    lightRatio: Math.min(1, light),
+    lightTrendNorm: 0.5,
+    sensorFreshness: 1,
+    weatherTempNorm: 0.5,
+    weatherHumidityNorm: 0.5,
+    rainProbability: 0.2,
+    et0Norm: 0.3,
+    uvNorm: 0.3,
+    wateringWindowScore: 0.8,
+    photoHealth: 0.5,
+    photoConfidence: 0,
+    photoFreshness: 0,
+    photoColorAnomalyScore: 0,
+    photoColorAnomalyConfidence: 0,
+    photoSpotCountNorm: 0,
+    photoDiseaseRisk: 0,
+    insightGoodRatio: 0,
+    insightWatchRatio: 0,
+    insightUrgentRatio: 0,
+    insightCoverage: 0,
+    bioActivityNorm: 0.5,
+    bioResponsiveness: 0.5,
+    bioQuality: 0.5,
+    bioFreshness: 0,
+    openAlertCountNorm: 0,
+    hasCriticalAlert: 0,
+    currentMoisturePct: moisture,
+    targetMoisturePct: 50,
+    moistureSlopePctPerHour: 0
+  };
+}
+
+// Deterministic PRNG so the suite is reproducible.
+let seed = 1234567;
+function rand(): number {
+  seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+  return seed / 0x7fffffff;
+}
+
+// Synthetic dataset: health tracks soil moisture closeness to target + light,
+// with a learnable non-linear bump and a little noise.
+const mlSamples: TrainingSample[] = Array.from({ length: 140 }, (_, i) => {
+  const moisture = 10 + rand() * 70;
+  const light = 0.3 + rand() * 0.7;
+  const closeness = 1 - Math.abs(moisture - 50) / 50;
+  const label = Math.max(
+    0,
+    Math.min(100, 30 + closeness * 50 + light * 20 + (rand() - 0.5) * 6)
+  );
+  return {
+    features: mkFeatures(moisture, light),
+    label,
+    plantId: "p1",
+    sampledAt: new Date(Date.now() - (140 - i) * 86_400_000).toISOString(),
+    photoId: `ph${i}`
+  };
+});
+
+const trained = trainWeights(DEFAULT_WEIGHTS, mlSamples, 300);
+if (!Number.isFinite(trained.rmse) || trained.rmse < 0) {
+  throw new Error(`Invalid training RMSE: ${trained.rmse}`);
+}
+// Non-regression guarantee: an adopted model must beat the prior out-of-fold.
+const priorRmse = (() => {
+  let se = 0;
+  for (const s of mlSamples) {
+    const p = predict(s.features, DEFAULT_WEIGHTS).healthScore;
+    se += (s.label - p) ** 2;
+  }
+  return Math.sqrt(se / mlSamples.length);
+})();
+if (trained.adopted && trained.valRmse > priorRmse + 1e-6) {
+  throw new Error(`Adopted model worse than prior CV: ${trained.valRmse} > ${priorRmse}`);
+}
+
+// Online learner must never degrade the recent buffer (it self-rolls-back).
+const online = onlineUpdate(trained.weights, mlSamples.slice(-60));
+if (online.applied && online.errorAfter > online.errorBefore + 1e-6) {
+  throw new Error(`Online update degraded buffer: ${online.errorAfter} > ${online.errorBefore}`);
+}
+// Guard: too few samples → no-op, weights untouched.
+const noop = onlineUpdate(trained.weights, mlSamples.slice(0, 3));
+if (noop.applied) {
+  throw new Error("Online update should be a no-op below the minimum buffer size");
 }
 
 console.log("backend smoke ok");
