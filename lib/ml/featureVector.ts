@@ -52,6 +52,16 @@ export const EXPERT_FEATURE_COUNT = 5
 export const INPUT_DIM = FEATURE_KEYS.length + EXPERT_FEATURE_COUNT
 
 /**
+ * Version du schéma de features. Tamponnée sur chaque échantillon, dataset et
+ * modèle. Tant qu'elle vaut 1, `FEATURE_KEYS` (donc `INPUT_DIM`) ne change pas:
+ * les poids et échantillons existants restent compatibles. Toute extension de
+ * `FEATURE_KEYS` DOIT incrémenter cette constante dans le même commit — sinon le
+ * mélange de versions dégrade silencieusement l'apprentissage (la tête résiduelle
+ * retombe sur "none" via migrateWeights et les clés absentes sont lues à 0).
+ */
+export const FEATURE_SCHEMA_VERSION = 1
+
+/**
  * Build the residual-head input vector: the normalized features followed by the
  * 5 engineered expert scores (each rescaled to 0-1).
  */
