@@ -8,6 +8,11 @@ import { trainWeights } from "../lib/ml/trainer";
 import { onlineUpdate } from "../lib/ml/online";
 import { predict } from "../lib/ml/model";
 import { DEFAULT_WEIGHTS, type MLFeatures, type TrainingSample } from "../lib/ml/types";
+import { FEATURE_KEYS, INPUT_DIM, EXPERT_FEATURE_COUNT, FEATURE_SCHEMA_VERSION } from "../lib/ml/featureVector";
+import { sensorDerivedLabel, manualLabel, agentLabel } from "../lib/ml/labels";
+import { toJsonl, fromJsonl, toCsv, gzip, gunzip, sha256 } from "../lib/ml/dataset/export";
+import { computeDatasetStats } from "../lib/ml/dataset/stats";
+import type { DatasetRow } from "../lib/ml/dataset/types";
 import type { BioReading } from "@prisma/client";
 
 const payload = telemetrySchema.parse({
@@ -296,6 +301,94 @@ if (online.applied && online.errorAfter > online.errorBefore + 1e-6) {
 const noop = onlineUpdate(trained.weights, mlSamples.slice(0, 3));
 if (noop.applied) {
   throw new Error("Online update should be a no-op below the minimum buffer size");
+}
+
+// ---- ML dataset: versionnage, labels, export, stats -----------------------
+
+// Garde de version: INPUT_DIM doit rester cohérent. Tout ajout à FEATURE_KEYS
+// doit s'accompagner d'un bump de FEATURE_SCHEMA_VERSION.
+if (INPUT_DIM !== FEATURE_KEYS.length + EXPERT_FEATURE_COUNT) {
+  throw new Error(`INPUT_DIM incohérent: ${INPUT_DIM} != ${FEATURE_KEYS.length} + ${EXPERT_FEATURE_COUNT}`);
+}
+if (!Number.isInteger(FEATURE_SCHEMA_VERSION) || FEATURE_SCHEMA_VERSION < 1) {
+  throw new Error(`FEATURE_SCHEMA_VERSION invalide: ${FEATURE_SCHEMA_VERSION}`);
+}
+
+// Labels: déterminisme + bornes + monotonie (sec < bien arrosé).
+const dryFeatures = mkFeatures(10, 0.5);
+const wetFeatures = mkFeatures(50, 0.5);
+const dry1 = sensorDerivedLabel(dryFeatures);
+const dry2 = sensorDerivedLabel(dryFeatures);
+if (dry1.label !== dry2.label || dry1.confidence !== dry2.confidence) {
+  throw new Error("sensorDerivedLabel non déterministe");
+}
+if (dry1.label < 0 || dry1.label > 100) {
+  throw new Error(`label hors bornes: ${dry1.label}`);
+}
+if (sensorDerivedLabel(wetFeatures).label <= dry1.label) {
+  throw new Error("Une plante bien arrosée devrait scorer plus haut qu'une plante sèche");
+}
+if (manualLabel(150).label !== 100 || manualLabel(-5).label !== 0 || manualLabel(70).confidence !== 1) {
+  throw new Error("manualLabel devrait borner et avoir confiance 1");
+}
+if (agentLabel(80).label !== 80) {
+  throw new Error("agentLabel devrait propager le score borné");
+}
+
+// Construire des lignes de dataset depuis les samples ML synthétiques.
+const datasetRows: DatasetRow[] = mlSamples.slice(0, 50).map((s, i) => ({
+  features: s.features,
+  label: s.label,
+  labelSource: i % 2 === 0 ? "photo" : "sensor_derived",
+  plantId: s.plantId,
+  sampledAt: s.sampledAt
+}));
+
+// Export JSONL: round-trip exact.
+const jsonl = toJsonl(datasetRows);
+const parsedBack = fromJsonl(jsonl);
+if (parsedBack.length !== datasetRows.length) {
+  throw new Error(`JSONL round-trip: ${parsedBack.length} != ${datasetRows.length}`);
+}
+if (parsedBack[0].label !== datasetRows[0].label || parsedBack[0].plantId !== datasetRows[0].plantId) {
+  throw new Error("JSONL round-trip altère les données");
+}
+
+// Export CSV: header = FEATURE_KEYS + 4 colonnes (label, labelSource, plantId, sampledAt).
+const csv = toCsv(datasetRows);
+const headerCols = csv.split("\n")[0].split(",");
+if (headerCols.length !== FEATURE_KEYS.length + 4) {
+  throw new Error(`CSV header: ${headerCols.length} != ${FEATURE_KEYS.length + 4}`);
+}
+if (csv.split("\n").length !== datasetRows.length + 1) {
+  throw new Error("CSV: nombre de lignes inattendu");
+}
+
+// Gzip: round-trip d'octets + checksum stable.
+const round = gunzip(gzip(jsonl)).toString("utf8");
+if (round !== jsonl) {
+  throw new Error("gzip/gunzip ne préserve pas le contenu");
+}
+if (sha256(jsonl) !== sha256(jsonl)) {
+  throw new Error("sha256 non déterministe");
+}
+
+// Stats: count exact, bins somment au count, mean dans [min,max].
+const stats = computeDatasetStats(datasetRows);
+if (stats.sampleCount !== datasetRows.length) {
+  throw new Error(`stats.sampleCount: ${stats.sampleCount} != ${datasetRows.length}`);
+}
+if (stats.histogram.reduce((a, b) => a + b, 0) !== datasetRows.length) {
+  throw new Error("Les bacs de l'histogramme ne somment pas au nombre d'échantillons");
+}
+if (stats.labelMean < stats.labelMin || stats.labelMean > stats.labelMax) {
+  throw new Error("labelMean hors de [min,max]");
+}
+if (stats.perLabelSource["photo"] === undefined || stats.perLabelSource["sensor_derived"] === undefined) {
+  throw new Error("perLabelSource devrait compter les deux sources");
+}
+if (computeDatasetStats([]).sampleCount !== 0) {
+  throw new Error("computeDatasetStats([]) devrait gérer le vide");
 }
 
 console.log("backend smoke ok");

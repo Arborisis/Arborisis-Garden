@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
-import { z } from "zod"
 import { extractFeatures } from "@/lib/ml/features"
 import { predict } from "@/lib/ml/model"
 import { onlineUpdate } from "@/lib/ml/online"
+import { sensorDerivedLabel } from "@/lib/ml/labels"
+import { FEATURE_SCHEMA_VERSION } from "@/lib/ml/featureVector"
 import { DEFAULT_WEIGHTS, type ModelWeights, type TrainingSample } from "@/lib/ml/types"
+import { mlCollectSchema } from "@/lib/schemas"
 
-const bodySchema = z.object({
-  plantId: z.string().optional()
-})
+const bodySchema = mlCollectSchema
 
 // How many recent samples feed the real-time online refinement step.
 const ONLINE_BUFFER = 80
@@ -90,7 +90,7 @@ export async function POST(req: Request) {
   const parsed = bodySchema.safeParse(body)
   if (!parsed.success) return NextResponse.json({ error: "Paramètres invalides" }, { status: 400 })
 
-  const { plantId } = parsed.data
+  const { plantId, includeSensorDerived = false } = parsed.data
 
   const photos = await prisma.plantPhoto.findMany({
     where: {
@@ -164,6 +164,7 @@ export async function POST(req: Request) {
         features: JSON.stringify(features),
         label: photo.healthScore!,
         labelSource: "photo",
+        featureSchemaVersion: FEATURE_SCHEMA_VERSION,
         photoId: photo.id,
         prediction: prediction.healthScore
       }
@@ -171,15 +172,91 @@ export async function POST(req: Request) {
     created++
   }
 
-  // Real-time online refinement on the freshly enlarged sample set.
-  const online = created > 0 ? await refineOnline(plantId) : { applied: false }
+  // Optionnel: étiquetage dérivé capteurs pour élargir la couverture des plantes
+  // peu/pas photographiées. Confiance basse + désactivé par défaut (anti-circularité).
+  let sensorDerived = 0
+  if (includeSensorDerived) {
+    sensorDerived = await collectSensorDerived(plantId, weights)
+  }
 
-  console.log(JSON.stringify({ route: "POST /api/ml/collect", plantId, created, skipped, onlineApplied: online.applied, latencyMs: Date.now() - start, status: 200 }))
+  // Real-time online refinement on the freshly enlarged sample set.
+  const online = created + sensorDerived > 0 ? await refineOnline(plantId) : { applied: false }
+
+  console.log(JSON.stringify({ route: "POST /api/ml/collect", plantId, created, sensorDerived, skipped, onlineApplied: online.applied, latencyMs: Date.now() - start, status: 200 }))
   return NextResponse.json({
     created,
+    sensorDerived,
     skipped,
     total: photos.length,
     online,
-    message: `${created} échantillons créés, ${skipped} déjà existants${online.applied ? " — modèle affiné en temps réel" : ""}`
+    message: `${created} échantillons photo${sensorDerived ? ` + ${sensorDerived} capteurs` : ""}, ${skipped} déjà existants${online.applied ? " — modèle affiné en temps réel" : ""}`
   })
+}
+
+const SENSOR_DERIVED_WINDOW_MS = 12 * 3_600_000
+
+/**
+ * Crée des échantillons `sensor_derived` pour les plantes ayant des relevés mais
+ * pas de photo notée récente. Un échantillon par plante, à l'instant de son
+ * dernier relevé, en sautant les fenêtres déjà couvertes par une photo (±12h).
+ */
+async function collectSensorDerived(plantId: string | undefined, weights: ModelWeights): Promise<number> {
+  const plants = await prisma.plant.findMany({
+    where: plantId ? { id: plantId } : {},
+    include: {
+      readings: { orderBy: { recordedAt: "desc" }, take: 48 },
+      alerts: { where: { status: "open" }, take: 20 }
+    }
+  })
+
+  let created = 0
+  for (const plant of plants) {
+    const latest = plant.readings[0]
+    if (!latest) continue
+    const sampledAt = new Date(latest.recordedAt)
+
+    // Sauter si une photo couvre déjà cette fenêtre (évite de doubler un label photo).
+    const nearbyPhoto = await prisma.plantPhoto.findFirst({
+      where: {
+        plantId: plant.id,
+        healthScore: { not: null },
+        createdAt: {
+          gte: new Date(sampledAt.getTime() - SENSOR_DERIVED_WINDOW_MS),
+          lte: new Date(sampledAt.getTime() + SENSOR_DERIVED_WINDOW_MS)
+        }
+      }
+    })
+    if (nearbyPhoto) continue
+
+    // Idempotence: ne pas recréer un échantillon capteur pour la même fenêtre.
+    const existing = await prisma.mLTrainingSample.findFirst({
+      where: {
+        plantId: plant.id,
+        labelSource: "sensor_derived",
+        sampledAt: {
+          gte: new Date(sampledAt.getTime() - SENSOR_DERIVED_WINDOW_MS),
+          lte: new Date(sampledAt.getTime() + SENSOR_DERIVED_WINDOW_MS)
+        }
+      }
+    })
+    if (existing) continue
+
+    const features = extractFeatures(plant, plant.readings, null, [], [], plant.alerts, sampledAt)
+    const { label } = sensorDerivedLabel(features)
+    const prediction = predict(features, weights)
+
+    await prisma.mLTrainingSample.create({
+      data: {
+        plantId: plant.id,
+        sampledAt,
+        features: JSON.stringify(features),
+        label,
+        labelSource: "sensor_derived",
+        featureSchemaVersion: FEATURE_SCHEMA_VERSION,
+        prediction: prediction.healthScore
+      }
+    })
+    created++
+  }
+  return created
 }

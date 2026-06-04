@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { evaluateReading } from "@/lib/rules";
 import { detectResponses } from "@/lib/bioelectric/analysis";
+import { maybeAutoTrain, type AutoTrainOutcome } from "@/lib/ml/dataset/auto-train";
 
 export const runtime = "nodejs";
 
@@ -32,5 +33,14 @@ export async function POST() {
     }
   }
 
-  return NextResponse.json({ ok: true, alertsCreated: created, bioResponses });
+  // Auto-entraînement ML au seuil (ML_AUTO_TRAIN_THRESHOLD). Résilient: une erreur
+  // (ex: bucket S3 non configuré) ne fait pas échouer le sweep.
+  let autoTrain: AutoTrainOutcome = { triggered: false };
+  try {
+    autoTrain = await maybeAutoTrain(new Date());
+  } catch (e) {
+    autoTrain = { triggered: false, reason: e instanceof Error ? e.message : "auto-train erreur" };
+  }
+
+  return NextResponse.json({ ok: true, alertsCreated: created, bioResponses, autoTrain });
 }

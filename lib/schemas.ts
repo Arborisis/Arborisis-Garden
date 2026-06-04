@@ -146,6 +146,52 @@ export const calendarEventDeleteSchema = z.object({
   id: z.string().min(1)
 });
 
+// ML dataset schemas
+export const datasetListQuerySchema = z.object({
+  status: z.enum(["draft", "frozen", "published"]).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional()
+});
+
+const datasetFilterSchema = {
+  plantId: z.string().min(1).optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+  labelSource: z.enum(["photo", "sensor_derived", "manual", "agent"]).optional()
+};
+
+export const datasetBuildSchema = z.object({
+  datasetId: z.string().min(1).optional(),
+  name: z.string().min(1).max(120),
+  slug: z.string().min(2).max(80).regex(/^[a-z0-9-]+$/, "slug url-safe (a-z, 0-9, tirets)"),
+  description: z.string().max(2000).optional(),
+  license: z.string().max(60).optional(),
+  ...datasetFilterSchema
+});
+
+export const datasetIdSchema = z.object({
+  id: z.string().min(1)
+});
+
+export const datasetTrainSchema = z.object({
+  epochs: z.number().int().min(5).max(2000).optional()
+});
+
+export const datasetExportQuerySchema = z.object({
+  format: z.enum(["jsonl", "csv", "hf", "datasheet"]).default("jsonl"),
+  gzip: z.coerce.boolean().optional()
+});
+
+export const manualLabelSchema = z.object({
+  plantId: z.string().min(1),
+  sampledAt: z.string().datetime().optional(),
+  value: z.number().min(0).max(100)
+});
+
+export const mlCollectSchema = z.object({
+  plantId: z.string().optional(),
+  includeSensorDerived: z.boolean().optional()
+});
+
 // Agentic output schemas
 export const agentTrendSchema = z.object({
   metric: z.string(),

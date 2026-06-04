@@ -172,7 +172,8 @@ model MLTrainingSample {
   sampledAt   DateTime
   features    String
   label       Float
-  labelSource String   @default("photo")
+  labelSource String   @default("photo") // "photo" | "sensor_derived" | "manual" | "agent"
+  featureSchemaVersion Int @default(1)
   photoId     String?
   prediction  Float?
   createdAt   DateTime @default(now())
@@ -188,6 +189,60 @@ model MLModelVersion {
   weights     String
   metrics     String?
   isActive    Boolean  @default(false)
+  // Provenance: de quel dataset figé ce modèle a-t-il été entraîné (le cas échéant).
+  datasetId            String?
+  dataset              MLDataset? @relation(fields: [datasetId], references: [id], onDelete: SetNull)
+  datasetVersion       String?    // slug du dataset capturé au moment du train
+  featureSchemaVersion Int        @default(1)
+  trainedFrom          String     @default("samples") // "samples" | "dataset"
+
+  @@index([datasetId])
+}
+
+// Un dataset ML versionné et (une fois figé) immuable: une sélection figée
+// d'échantillons d'entraînement, snapshotée sur le stockage objet S3 et
+// publiable (JSONL/CSV, export Hugging Face, datasheet).
+model MLDataset {
+  id                   String   @id @default(cuid())
+  name                 String
+  slug                 String   @unique // url-safe, ex: "garden-health-v1"
+  description          String   @default("")
+  status               String   @default("draft") // "draft" | "frozen" | "published"
+  sampleCount          Int      @default(0)
+  featureSchemaVersion Int      @default(1)
+  labelDistribution    String?  // JSON: histo + counts par labelSource + min/max/mean/std
+  dateRangeStart       DateTime?
+  dateRangeEnd         DateTime?
+  plantIds             String   @default("[]") // JSON array des plantes couvertes
+  filterSpec           String?  // JSON des filtres utilisés au build
+  snapshotObjectKey    String?  // clé S3 du JSONL.gz figé (set au freeze)
+  checksum             String?  // sha256 du JSONL canonique (set au freeze)
+  license              String   @default("CC-BY-4.0")
+  createdAt            DateTime @default(now())
+  frozenAt             DateTime?
+  publishedAt          DateTime?
+  samples              MLDatasetSample[]
+  models               MLModelVersion[]
+
+  @@index([status, createdAt])
+}
+
+// Copie immuable d'un échantillon dans un dataset. On copie les features/label
+// (plutôt qu'une simple jointure) pour qu'un dataset figé ne mute jamais quand
+// l'échantillon source est re-collecté, re-labellisé, ou supprimé en cascade.
+model MLDatasetSample {
+  id                   String    @id @default(cuid())
+  datasetId            String
+  dataset              MLDataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  sourceSampleId       String?   // lignage seul (pas de FK porteuse)
+  plantId              String
+  sampledAt            DateTime
+  features             String    // copie JSON immuable
+  label                Float
+  labelSource          String
+  featureSchemaVersion Int       @default(1)
+
+  @@index([datasetId])
 }
 
 model PairingCode {

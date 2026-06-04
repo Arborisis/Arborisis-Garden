@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { MLIntelligencePanel } from "./ml-intelligence-panel";
+import { MLDatasetPanel } from "./ml-dataset-panel";
 import { BioelectricPanel } from "./bioelectric-panel";
 import {
   Activity,
@@ -1671,6 +1672,7 @@ export function GardenApp() {
               weatherLocation={(weatherLocation.trim() || plant.location) ?? undefined}
               timezone={timezone}
             />
+            <MLDatasetPanel plantId={plant.id} />
             </div>
           )}
 
