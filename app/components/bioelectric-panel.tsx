@@ -30,6 +30,17 @@ type BioReadingRow = {
   signalMl?: {
     signalConfidence: number;
     pattern: string;
+    anomalyScore?: number;
+    stressScore?: number;
+    rhythmScore?: number;
+    stabilityScore?: number;
+    spectralBalance?: {
+      low: number;
+      mid: number;
+      high: number;
+      entropy: number;
+    };
+    reasons?: string[];
     learnedFromWindows: number;
   } | null;
 };
@@ -73,10 +84,32 @@ function formatPattern(pattern: string | null | undefined): string {
     case "recoverable_noise": return "bruit récupérable";
     case "spike_burst": return "salve de pics";
     case "slow_drift": return "dérive lente";
+    case "electrode_shift": return "déplacement électrode";
+    case "rhythmic_pulse": return "pulsation rythmique";
+    case "stress_response": return "réponse de stress";
     case "flatline": return "signal plat";
     case "saturation": return "saturation";
     default: return "motif inconnu";
   }
+}
+
+function pct(value: number | null | undefined): string {
+  return typeof value === "number" ? `${Math.round(value * 100)}%` : "—";
+}
+
+function MlMeter({ label, value }: { label: string; value: number | null | undefined }) {
+  const clamped = typeof value === "number" ? Math.max(0, Math.min(1, value)) : 0;
+  return (
+    <div style={{ flex: "1 1 92px", minWidth: 92 }}>
+      <div className="muted small" style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+        <span>{label}</span>
+        <span>{pct(value)}</span>
+      </div>
+      <div style={{ height: 5, borderRadius: 4, background: "rgba(120,120,120,0.16)", overflow: "hidden", marginTop: 3 }}>
+        <div style={{ width: `${clamped * 100}%`, height: "100%", background: ACCENT }} />
+      </div>
+    </div>
+  );
 }
 
 /** Petite forme d'onde SVG normalisée (points 0-1 ou bruts auto-échelonnés). */
@@ -237,10 +270,23 @@ export function BioelectricPanel({ plantId, className }: { plantId: string; clas
               {latest?.qualityFlag ? ` · ${latest.qualityFlag}` : ""}
             </span>
             {latest?.signalMl && (
-              <span className="muted small" style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
-                <BrainCircuit size={13} /> {formatPattern(latest.signalMl.pattern)}
-                {latest.signalMl.learnedFromWindows ? ` · appris sur ${latest.signalMl.learnedFromWindows} fenêtres` : ""}
-              </span>
+              <>
+                <span className="muted small" style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
+                  <BrainCircuit size={13} /> {formatPattern(latest.signalMl.pattern)}
+                  {latest.signalMl.learnedFromWindows ? ` · appris sur ${latest.signalMl.learnedFromWindows} fenêtres` : ""}
+                </span>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+                  <MlMeter label="Stabilité" value={latest.signalMl.stabilityScore} />
+                  <MlMeter label="Stress" value={latest.signalMl.stressScore} />
+                  <MlMeter label="Anomalie" value={latest.signalMl.anomalyScore} />
+                  <MlMeter label="Rythme" value={latest.signalMl.rhythmScore} />
+                </div>
+                {latest.signalMl.reasons?.length ? (
+                  <div className="muted small" style={{ marginTop: 6 }}>
+                    {latest.signalMl.reasons.slice(0, 3).join(" · ")}
+                  </div>
+                ) : null}
+              </>
             )}
             <Sparkline points={waveform} />
           </div>

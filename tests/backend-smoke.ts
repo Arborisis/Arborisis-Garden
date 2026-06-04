@@ -1,6 +1,8 @@
 import { telemetrySchema } from "../lib/schemas";
 import { evaluateReading } from "../lib/rules";
 import { parseAiInsightsResponse } from "../lib/insights";
+import { analyzeStoredBioReadings } from "../lib/bioelectric/adaptive-model";
+import type { BioReading } from "@prisma/client";
 
 const payload = telemetrySchema.parse({
   deviceSerial: "pico-test",
@@ -84,6 +86,77 @@ const openRouterInsights = parseAiInsightsResponse(`\`\`\`json
 
 if (openRouterInsights.length !== 4 || openRouterInsights[0].tone !== "urgent") {
   throw new Error("Expected fenced OpenRouter insights payload to parse");
+}
+
+function bioReading(overrides: Partial<BioReading> = {}): BioReading {
+  const recordedAt = overrides.recordedAt ?? new Date("2026-06-04T10:00:00.000Z");
+  const waveform =
+    overrides.waveform ??
+    JSON.stringify(Array.from({ length: 32 }, (_, i) => 0.5 + Math.sin((i / 31) * Math.PI * 4) * 0.04));
+  return {
+    id: overrides.id ?? `bio-${recordedAt.getTime()}`,
+    deviceId: overrides.deviceId ?? "bio-device",
+    plantId: overrides.plantId ?? "plant",
+    recordedAt,
+    firmwareVersion: overrides.firmwareVersion ?? "test",
+    sampleRateHz: overrides.sampleRateHz ?? 128,
+    windowSeconds: overrides.windowSeconds ?? 4,
+    sampleCount: overrides.sampleCount ?? 512,
+    channel: overrides.channel ?? "A0",
+    gain: overrides.gain ?? null,
+    baselineRaw: overrides.baselineRaw ?? 32768,
+    baselineUv: overrides.baselineUv ?? null,
+    meanUv: overrides.meanUv ?? null,
+    rmsUv: overrides.rmsUv ?? null,
+    rmsRaw: overrides.rmsRaw ?? 100,
+    stdRaw: overrides.stdRaw ?? 18,
+    p2pRaw: overrides.p2pRaw ?? 80,
+    minRaw: overrides.minRaw ?? 32720,
+    maxRaw: overrides.maxRaw ?? 32820,
+    slopeRawPerSec: overrides.slopeRawPerSec ?? 0.4,
+    spikeCount: overrides.spikeCount ?? 1,
+    zeroCrossRate: overrides.zeroCrossRate ?? 8,
+    bandLowEnergy: overrides.bandLowEnergy ?? 55,
+    bandMidEnergy: overrides.bandMidEnergy ?? 35,
+    bandHighEnergy: overrides.bandHighEnergy ?? 10,
+    activityIndex: overrides.activityIndex ?? null,
+    qualityFlag: overrides.qualityFlag ?? "ok",
+    waveform,
+    batteryMv: overrides.batteryMv ?? null,
+    wifiRssi: overrides.wifiRssi ?? null,
+  };
+}
+
+const baselineBio = Array.from({ length: 12 }, (_, i) =>
+  bioReading({
+    id: `bio-base-${i}`,
+    recordedAt: new Date(Date.UTC(2026, 5, 4, 9, i)),
+    rmsRaw: 98 + (i % 3),
+    p2pRaw: 78 + (i % 2),
+    spikeCount: i % 2,
+  })
+);
+const spikeBio = bioReading({
+  id: "bio-spike",
+  recordedAt: new Date("2026-06-04T10:30:00.000Z"),
+  rmsRaw: 185,
+  stdRaw: 52,
+  p2pRaw: 260,
+  spikeCount: 24,
+  bandLowEnergy: 20,
+  bandMidEnergy: 25,
+  bandHighEnergy: 180,
+  waveform: JSON.stringify(Array.from({ length: 32 }, (_, i) => (i % 4 === 0 ? 0.92 : 0.42 + (i % 3) * 0.02))),
+});
+const bioMl = analyzeStoredBioReadings([...baselineBio, spikeBio], [], 100);
+const learnedBaseline = bioMl.get("bio-base-11");
+const learnedSpike = bioMl.get("bio-spike");
+
+if (learnedBaseline?.pattern !== "baseline" || (learnedBaseline.signalConfidence ?? 0) < 0.55) {
+  throw new Error(`Expected learned bio baseline, got ${JSON.stringify(learnedBaseline)}`);
+}
+if (learnedSpike?.pattern !== "spike_burst" || learnedSpike.anomalyScore <= 0.5) {
+  throw new Error(`Expected bio spike burst anomaly, got ${JSON.stringify(learnedSpike)}`);
 }
 
 console.log("backend smoke ok");
