@@ -68,6 +68,7 @@ class ArborisisPico:
         self.last_post = "never"
         self.time_synced = False
         self.last_sync_ms = None
+        self.last_sync_attempt_ms = None
         self.wifi_backoff = config.WIFI_BACKOFF_START
         self.wlan = network.WLAN(network.STA_IF)
         self.wdt = None  # armed in run(), after the slow sensor probing above.
@@ -218,9 +219,18 @@ class ArborisisPico:
     def sync_time(self, force=False):
         if not self.wlan.isconnected():
             return
-        if not force and self.time_synced and self.last_sync_ms is not None:
-            if time.ticks_diff(time.ticks_ms(), self.last_sync_ms) < config.NTP_RESYNC_SECONDS * 1000:
+        now = time.ticks_ms()
+        if not force:
+            # Already synced recently → nothing to do.
+            if self.time_synced and self.last_sync_ms is not None \
+                    and time.ticks_diff(now, self.last_sync_ms) < config.NTP_RESYNC_SECONDS * 1000:
                 return
+            # NTP is failing (e.g. UDP/123 blocked on this network) → back off
+            # instead of attempting a doomed sync on every single cycle.
+            if not self.time_synced and self.last_sync_attempt_ms is not None \
+                    and time.ticks_diff(now, self.last_sync_attempt_ms) < config.NTP_RETRY_SECONDS * 1000:
+                return
+        self.last_sync_attempt_ms = now
         try:
             import ntptime
             ntptime.host = config.NTP_HOST
@@ -290,7 +300,7 @@ class ArborisisPico:
         response = None
         try:
             self.feed()
-            response = requests.post(url, data=json.dumps(payload), headers=headers)
+            response = requests.post(url, data=json.dumps(payload), headers=headers, timeout=config.HTTP_TIMEOUT)
             status = response.status_code
             print("POST", status, response.text[:120])
             self.last_post = "HTTP {}".format(status)

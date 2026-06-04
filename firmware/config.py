@@ -34,8 +34,13 @@ WIFI_CONNECT_TIMEOUT = 18     # seconds to wait for an association.
 WIFI_BACKOFF_START = 5        # seconds before the first reconnect attempt.
 WIFI_BACKOFF_MAX = 300        # cap on the exponential reconnect backoff.
 OFFLINE_BUFFER_MAX = 60       # readings cached in RAM while the API is down.
+# Socket timeout for the telemetry POST. MUST stay below WATCHDOG_MS: a stalled
+# HTTPS request (slow TLS, packet loss, cold server) would otherwise block past
+# the watchdog window and reboot the device instead of failing gracefully.
+HTTP_TIMEOUT = 6              # seconds; aborted POSTs are buffered and retried.
 NTP_HOST = "pool.ntp.org"
 NTP_RESYNC_SECONDS = 21600    # re-sync the clock every 6 h.
+NTP_RETRY_SECONDS = 600       # when NTP is failing, back off instead of retrying every cycle.
 
 # Median filtering smooths noisy ADC channels (odd sample counts only).
 MOISTURE_SAMPLES = 9
