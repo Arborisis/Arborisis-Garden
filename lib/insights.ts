@@ -1,6 +1,7 @@
 import type { Plant, Reading, PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import { summarizeWeatherForAgent, type WeatherContext } from "@/lib/weather";
+import { summarizeBioForAgent } from "@/lib/bioelectric/analysis";
 
 export const INSIGHTS_CACHE_KIND = "ai_insights_cache";
 export const INSIGHTS_CACHE_TTL_MS = 4 * 60 * 60 * 1000;
@@ -178,7 +179,7 @@ function buildWeatherCacheKey(weather?: WeatherContext | null) {
   });
 }
 
-function buildInsightsPrompt(plant: PlantWithReadings, weather?: WeatherContext | null) {
+function buildInsightsPrompt(plant: PlantWithReadings, weather?: WeatherContext | null, bioText?: string) {
   const readings = plant.readings
     .slice(0, 24)
     .reverse()
@@ -205,6 +206,9 @@ ${JSON.stringify(readings, null, 2)}
 Meteo locale du site:
 ${weather ? summarizeWeatherForAgent(weather) : "Meteo indisponible pour cette generation d'insights."}
 
+Signal bioelectrique (2e capteur, biopotentiel de la plante):
+${bioText && bioText.length ? bioText : "Aucun capteur bioelectrique actif sur cette plante."}
+
 Reponds uniquement avec un objet JSON valide:
 {
   "insights": [
@@ -219,10 +223,11 @@ Contraintes:
 - "watch" pour une derive ou un risque a surveiller.
 - "good" pour une mesure stable ou rassurante.
 - Integre la meteo quand elle change l'arrosage, la lumiere, la temperature, le vent ou l'evaporation.
+- Si un signal bioelectrique est present, integre-le: une plante qui reagit a l'arrosage est rassurante; une activite faible/atone ou une chute de qualite merite un "watch".
 - Ne mentionne pas OpenRouter, le cache ou le prompt.`;
 }
 
-async function generateInsightsWithOpenRouter(plant: PlantWithReadings, weather?: WeatherContext | null): Promise<AiInsight[]> {
+async function generateInsightsWithOpenRouter(plant: PlantWithReadings, weather?: WeatherContext | null, bioText?: string): Promise<AiInsight[]> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
     throw new Error("OPENROUTER_API_KEY manquant");
@@ -248,7 +253,7 @@ async function generateInsightsWithOpenRouter(plant: PlantWithReadings, weather?
         },
         {
           role: "user",
-          content: buildInsightsPrompt(plant, weather)
+          content: buildInsightsPrompt(plant, weather, bioText)
         }
       ]
     })
@@ -321,7 +326,8 @@ export async function getAiInsights(prisma: PrismaClient, plantId: string, weath
     }
   });
 
-  const insights = await generateInsightsWithOpenRouter(plant, weather);
+  const bio = await summarizeBioForAgent(prisma, plantId);
+  const insights = await generateInsightsWithOpenRouter(plant, weather, bio.hasDevice ? bio.text : undefined);
   const generatedAt = now.toISOString();
   const expiresAt = new Date(now.getTime() + INSIGHTS_CACHE_TTL_MS).toISOString();
 

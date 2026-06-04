@@ -1,5 +1,5 @@
 node_modules
-.next
+.next*
 .cache
 prisma/dev.db
 *.db

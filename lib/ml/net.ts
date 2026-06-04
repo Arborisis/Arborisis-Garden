@@ -4,25 +4,27 @@ import {
   computeSensorScore,
   computeWeatherRisk,
   computeVisualScore,
-  computeLlmConsensus
+  computeLlmConsensus,
+  computeBioScore
 } from "./scoring"
 import { toVector, standardize, identityNorm, INPUT_DIM, type NormStats } from "./featureVector"
 
-export type ExpertScores = { sensor: number; visual: number; weather: number; llm: number }
+export type ExpertScores = { sensor: number; visual: number; weather: number; llm: number; bio: number }
 
-/** The 4 engineered domain expert scores (0-100). weather is 100 - risk. */
+/** The 5 engineered domain expert scores (0-100). weather is 100 - risk. */
 export function expertScores(f: MLFeatures): ExpertScores {
   return {
     sensor: computeSensorScore(f),
     visual: computeVisualScore(f),
     weather: 100 - computeWeatherRisk(f),
-    llm: computeLlmConsensus(f)
+    llm: computeLlmConsensus(f),
+    bio: computeBioScore(f)
   }
 }
 
-/** Numerically stable softmax over the 4 expert logits → mixture weights. */
+/** Numerically stable softmax over the 5 expert logits → mixture weights. */
 export function softmaxExperts(logits: ExpertLogits): ExpertScores {
-  const arr = [logits.sensor, logits.visual, logits.weather, logits.llm]
+  const arr = [logits.sensor, logits.visual, logits.weather, logits.llm, logits.bio]
   const max = Math.max(...arr)
   const exp = arr.map(v => Math.exp(v - max))
   const sum = exp.reduce((a, b) => a + b, 0) || 1
@@ -30,7 +32,8 @@ export function softmaxExperts(logits: ExpertLogits): ExpertScores {
     sensor: exp[0] / sum,
     visual: exp[1] / sum,
     weather: exp[2] / sum,
-    llm: exp[3] / sum
+    llm: exp[3] / sum,
+    bio: exp[4] / sum
   }
 }
 
@@ -39,7 +42,8 @@ export function expertBlend(scores: ExpertScores, mix: ExpertScores): number {
     scores.sensor * mix.sensor +
     scores.visual * mix.visual +
     scores.weather * mix.weather +
-    scores.llm * mix.llm
+    scores.llm * mix.llm +
+    scores.bio * mix.bio
   )
 }
 
@@ -126,6 +130,21 @@ export function forward(
  * Accept legacy v1 weights ({sensor,visual,weather,llm} summing to 1) or the new
  * v2 structure, always returning a valid v2 ModelWeights.
  */
+/**
+ * Back-fill any missing expert logit (notably `bio`, added after some weights
+ * were already serialized) with the safe default so older models keep working.
+ */
+function normalizeExperts(raw: unknown): ExpertLogits {
+  const e = (raw ?? {}) as Partial<ExpertLogits>
+  return {
+    sensor: typeof e.sensor === "number" ? e.sensor : DEFAULT_WEIGHTS.experts.sensor,
+    visual: typeof e.visual === "number" ? e.visual : DEFAULT_WEIGHTS.experts.visual,
+    weather: typeof e.weather === "number" ? e.weather : DEFAULT_WEIGHTS.experts.weather,
+    llm: typeof e.llm === "number" ? e.llm : DEFAULT_WEIGHTS.experts.llm,
+    bio: typeof e.bio === "number" ? e.bio : DEFAULT_WEIGHTS.experts.bio
+  }
+}
+
 export function migrateWeights(raw: unknown): ModelWeights {
   if (!raw || typeof raw !== "object") return DEFAULT_WEIGHTS
   const obj = raw as Record<string, unknown>
@@ -134,20 +153,20 @@ export function migrateWeights(raw: unknown): ModelWeights {
     const r = obj.residual as ModelWeights["residual"]
     const kind = r.kind ?? "none"
     // Garde-fou: si la tete residuelle a ete entrainee sur un nombre de features
-    // different (ex: ajout de photoDiseaseRisk), ses poids ne sont plus alignes.
+    // different (ex: ajout de l'expert bio), ses poids ne sont plus alignes.
     // On retombe sur le melange d'experts (sur) jusqu'au prochain entrainement.
     const storedDim = r.norm?.mean?.length ?? 0
     const dimMismatch = kind !== "none" && storedDim !== INPUT_DIM
     if (dimMismatch) {
       return {
         version: 2,
-        experts: obj.experts as ExpertLogits,
+        experts: normalizeExperts(obj.experts),
         residual: { kind: "none", norm: { mean: [], std: [] }, range: r.range ?? 25 }
       }
     }
     return {
       version: 2,
-      experts: obj.experts as ExpertLogits,
+      experts: normalizeExperts(obj.experts),
       residual: {
         kind,
         norm: r.norm ?? { mean: [], std: [] },
@@ -177,7 +196,8 @@ export function migrateWeights(raw: unknown): ModelWeights {
         sensor: Math.log(Math.max(legacy.sensor, eps)),
         visual: Math.log(Math.max(legacy.visual, eps)),
         weather: Math.log(Math.max(legacy.weather, eps)),
-        llm: Math.log(Math.max(legacy.llm, eps))
+        llm: Math.log(Math.max(legacy.llm, eps)),
+        bio: DEFAULT_WEIGHTS.experts.bio
       },
       residual: { kind: "none", norm: { mean: [], std: [] }, range: 25 }
     }

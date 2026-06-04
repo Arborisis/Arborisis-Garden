@@ -1,4 +1,4 @@
-import type { Plant, Reading, PlantPhoto, Alert } from "@prisma/client"
+import type { Plant, Reading, PlantPhoto, Alert, BioReading, BioResponseEvent } from "@prisma/client"
 import type { WeatherContext } from "@/lib/weather"
 import type { AiInsight } from "@/lib/insights"
 import type { MLFeatures } from "./types"
@@ -43,7 +43,8 @@ export function extractFeatures(
   photos: PlantPhoto[],
   insights: AiInsight[],
   alerts: Alert[],
-  asOf?: Date
+  asOf?: Date,
+  bio?: { readings: BioReading[]; responses: BioResponseEvent[] }
 ): MLFeatures {
   const now = asOf?.getTime() ?? Date.now()
 
@@ -146,6 +147,36 @@ export function extractFeatures(
   const insightUrgentRatio = total > 0 ? urgentCount / total : 0
   const insightCoverage = clamp(total / 4)
 
+  // ---- Bioelectric ----
+  // Priors neutres (0.5 / fraîcheur 0) quand aucun Pico bio: l'expert bio reste
+  // au neutre et n'affecte pas les plantes sans capteur bioélectrique.
+  const bioReadings = bio?.readings ?? []
+  const bioResponses = bio?.responses ?? []
+  const bioSorted = [...bioReadings].sort(
+    (a, b) => new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime()
+  )
+  const latestBio = bioSorted[0]
+  const bioGapMs = latestBio ? now - new Date(latestBio.recordedAt).getTime() : Infinity
+  const bioFreshness = latestBio ? clamp(Math.exp(-bioGapMs / (24 * 3_600_000))) : 0
+
+  const bioRecent = bioSorted.filter(r => now - new Date(r.recordedAt).getTime() < 24 * 3_600_000)
+  const bioActivityVals = bioRecent.map(r => r.activityIndex).filter((v): v is number => v != null)
+  const bioActivityNorm = bioActivityVals.length
+    ? clamp(bioActivityVals.reduce((a, b) => a + b, 0) / bioActivityVals.length)
+    : 0.5
+  const bioQuality = bioRecent.length
+    ? clamp(bioRecent.filter(r => r.qualityFlag === 'ok').length / bioRecent.length)
+    : 0.5
+
+  const recentResponses = bioResponses.filter(r => now - new Date(r.eventAt).getTime() < 14 * 86_400_000)
+  let bioResponsiveness = 0.5
+  if (recentResponses.length) {
+    const per = recentResponses.map(r =>
+      r.reacted ? clamp(Math.min(1, r.responseRatio - 1) * (0.4 + 0.6 * r.confidence)) : 0
+    )
+    bioResponsiveness = clamp(per.reduce((a, b) => a + b, 0) / per.length)
+  }
+
   // ---- Alerts ----
   const openAlerts = alerts.filter(a => a.status === 'open')
   const openAlertCountNorm = clamp(openAlerts.length / 5)
@@ -179,6 +210,10 @@ export function extractFeatures(
     insightWatchRatio,
     insightUrgentRatio,
     insightCoverage,
+    bioActivityNorm,
+    bioResponsiveness,
+    bioQuality,
+    bioFreshness,
     openAlertCountNorm,
     hasCriticalAlert,
     currentMoisturePct,

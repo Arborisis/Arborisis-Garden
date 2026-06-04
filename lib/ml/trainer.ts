@@ -88,7 +88,8 @@ function evalHealthW(p: Prepared, w: ModelWeights): number {
     p.scores.sensor * mix.sensor +
     p.scores.visual * mix.visual +
     p.scores.weather * mix.weather +
-    p.scores.llm * mix.llm
+    p.scores.llm * mix.llm +
+    p.scores.bio * mix.bio
   const { residual } = residualForward(w, p.vector)
   return Math.max(0, Math.min(100, blend + residual))
 }
@@ -128,8 +129,8 @@ function fitModel(
   const norm: NormStats = kind === "none" ? { mean: [], std: [] } : fitNorm(fitSet.map(p => p.vector))
   const l2 = effectiveL2(paramCountFor(kind), fitSet.length)
 
-  const logits = [init.experts.sensor, init.experts.visual, init.experts.weather, init.experts.llm]
-  const logitAdam = new Adam(4)
+  const logits = [init.experts.sensor, init.experts.visual, init.experts.weather, init.experts.llm, init.experts.bio]
+  const logitAdam = new Adam(5)
 
   let linW: number[] = [], linB = 0
   let W1: number[][] = [], b1: number[] = [], W2: number[] = [], b2 = 0
@@ -158,7 +159,7 @@ function fitModel(
         : { kind, norm, range: RESIDUAL_RANGE, W1: W1.map(r => [...r]), b1: [...b1], W2: [...W2], b2 }
     return {
       version: 2,
-      experts: { sensor: logits[0], visual: logits[1], weather: logits[2], llm: logits[3] },
+      experts: { sensor: logits[0], visual: logits[1], weather: logits[2], llm: logits[3], bio: logits[4] },
       residual
     }
   }
@@ -172,7 +173,7 @@ function fitModel(
   for (let epoch = 0; epoch < maxEpochs; epoch++) {
     ranEpochs = epoch + 1
 
-    const gLogits = [0, 0, 0, 0]
+    const gLogits = [0, 0, 0, 0, 0]
     const gLinW = kind === "linear" ? new Array(INPUT_DIM).fill(0) : []
     let gLinB = 0
     const gW1 = kind === "mlp" ? W1.map(r => r.map(() => 0)) : []
@@ -180,7 +181,7 @@ function fitModel(
     const gW2 = kind === "mlp" ? new Array(HIDDEN_DIM).fill(0) : []
     let gb2 = 0
 
-    const mix = softmaxExperts({ sensor: logits[0], visual: logits[1], weather: logits[2], llm: logits[3] })
+    const mix = softmaxExperts({ sensor: logits[0], visual: logits[1], weather: logits[2], llm: logits[3], bio: logits[4] })
     const m = fitSet.length
 
     for (const p of fitSet) {
@@ -188,7 +189,8 @@ function fitModel(
         p.scores.sensor * mix.sensor +
         p.scores.visual * mix.visual +
         p.scores.weather * mix.weather +
-        p.scores.llm * mix.llm
+        p.scores.llm * mix.llm +
+        p.scores.bio * mix.bio
 
       const x = kind === "none" ? p.vector : standardize(p.vector, norm)
 
@@ -218,9 +220,9 @@ function fitModel(
       const saturated = (raw <= 0 && pred === 0) || (raw >= 100 && pred === 100)
       const dPred = saturated ? 0 : (pred - p.label) / m
 
-      const scoresArr = [p.scores.sensor, p.scores.visual, p.scores.weather, p.scores.llm]
-      const mixArr = [mix.sensor, mix.visual, mix.weather, mix.llm]
-      for (let k = 0; k < 4; k++) gLogits[k] += dPred * mixArr[k] * (scoresArr[k] - blend)
+      const scoresArr = [p.scores.sensor, p.scores.visual, p.scores.weather, p.scores.llm, p.scores.bio]
+      const mixArr = [mix.sensor, mix.visual, mix.weather, mix.llm, mix.bio]
+      for (let k = 0; k < 5; k++) gLogits[k] += dPred * mixArr[k] * (scoresArr[k] - blend)
 
       if (kind === "linear") {
         const dZ = dPred * RESIDUAL_RANGE * (1 - aOut * aOut)
@@ -240,7 +242,7 @@ function fitModel(
     }
 
     // L2 regularization
-    for (let k = 0; k < 4; k++) gLogits[k] += L2_LOGITS * logits[k]
+    for (let k = 0; k < 5; k++) gLogits[k] += L2_LOGITS * logits[k]
     if (kind === "linear") {
       for (let j = 0; j < INPUT_DIM; j++) gLinW[j] += l2 * linW[j]
     } else if (kind === "mlp") {

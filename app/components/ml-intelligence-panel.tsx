@@ -29,6 +29,7 @@ type MLPrediction = {
     visualScore: number;
     weatherRisk: number;
     llmConsensus: number;
+    bioScore?: number;
   };
   dominantSignals: string[];
   generatedAt: string;
@@ -340,6 +341,9 @@ export function MLIntelligencePanel({
           <Bar value={prediction.breakdown.visualScore} color="var(--leaf)" label="Photos" />
           <Bar value={100 - prediction.breakdown.weatherRisk} color="var(--sky)" label="Météo" />
           <Bar value={prediction.breakdown.llmConsensus} color="var(--moss)" label="IA Insights" />
+          {typeof prediction.breakdown.bioScore === "number" && (
+            <Bar value={prediction.breakdown.bioScore} color="var(--bloom, #b06ab3)" label="Bioélectricité" />
+          )}
         </div>
       )}
 

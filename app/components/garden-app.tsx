@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { MLIntelligencePanel } from "./ml-intelligence-panel";
+import { BioelectricPanel } from "./bioelectric-panel";
 import {
   Activity,
   AlertTriangle,
@@ -430,24 +431,34 @@ export function GardenApp() {
   }, [weatherLocation, timezone]);
 
   async function refresh() {
-    const response = await fetch("/api/plants", { cache: "no-store" });
-    const data = await response.json();
-    setPlants(data.plants ?? []);
-    const first = data.plants?.[0];
-    if (first) {
-      setForm({
-        id: first.id,
-        name: first.name,
-        species: first.species ?? "",
-        location: first.location ?? "",
-        notes: first.notes ?? "",
-        targetMoisture: first.targetMoisture,
-        minLightLux: first.minLightLux,
-        minSoilTempC: first.minSoilTempC,
-        maxSoilTempC: first.maxSoilTempC
-      });
+    try {
+      const response = await fetch("/api/plants", { cache: "no-store" });
+      if (!response.ok) {
+        setLoading(false);
+        return;
+      }
+
+      const data = await response.json().catch(() => ({ plants: [] as Plant[] })) as { plants?: Plant[] };
+      setPlants(data.plants ?? []);
+      const first = data.plants?.[0];
+      if (first) {
+        setForm({
+          id: first.id,
+          name: first.name,
+          species: first.species ?? "",
+          location: first.location ?? "",
+          notes: first.notes ?? "",
+          targetMoisture: first.targetMoisture,
+          minLightLux: first.minLightLux,
+          minSoilTempC: first.minSoilTempC,
+          maxSoilTempC: first.maxSoilTempC
+        });
+      }
+    } catch {
+      // Keep the current UI usable when the local API is unavailable.
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }
 
   async function unpairDevice() {
@@ -1226,27 +1237,27 @@ export function GardenApp() {
       </section>
 
       {plant?.device?.lastSeen && new Date().getTime() - new Date(plant.device.lastSeen).getTime() > 15 * 60 * 1000 && (
-        <div style={{ background: "var(--danger-glow)", border: "1px solid var(--danger)", borderRadius: "var(--radius-md, 8px)", padding: "10px 16px", margin: "0 16px 8px", display: "flex", alignItems: "center", gap: "8px", color: "var(--danger)", fontSize: "0.9rem" }}>
+        <div className="offlineBanner" role="status">
           <AlertTriangle size={16} />
           <span>Device offline — last seen {formatTime(plant.device.lastSeen, timezone)}</span>
-          <button style={{ marginLeft: "auto", background: "transparent", border: "1px solid var(--danger)", color: "var(--danger)", borderRadius: "var(--radius-sm, 6px)", padding: "4px 10px", cursor: "pointer", fontSize: "0.8rem" }} onClick={() => setShowPairingModal(true)}>Re-pair</button>
+          <button className="dangerGhostButton compact" onClick={() => setShowPairingModal(true)}>Re-pair</button>
         </div>
       )}
 
       {showPairingModal && plant?.device && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div className="modalScrim">
           <DevicePairing deviceSerial={plant.device.serial} onPaired={() => { setShowPairingModal(false); void refresh(); }} onClose={() => setShowPairingModal(false)} />
         </div>
       )}
 
       {showUnpairConfirm && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ background: "var(--surface-raised)", border: "1px solid var(--line-strong)", borderRadius: "var(--radius-lg, 12px)", padding: "24px", maxWidth: 360, display: "flex", flexDirection: "column", gap: "16px" }}>
-            <h3 style={{ margin: 0, color: "var(--ink)" }}>Unlink device?</h3>
-            <p style={{ margin: 0, color: "var(--ink-2)", fontSize: "0.9rem" }}>This will unlink the device from this plant. All readings are preserved. You can re-pair at any time.</p>
-            <div style={{ display: "flex", gap: "8px" }}>
-              <button style={{ background: "var(--danger)", color: "#fff", border: "none", borderRadius: "var(--radius-sm, 6px)", padding: "10px 20px", cursor: "pointer", fontWeight: 600 }} onClick={() => void unpairDevice()}>Unlink</button>
-              <button style={{ background: "transparent", color: "var(--ink-2)", border: "1px solid var(--line)", borderRadius: "var(--radius-sm, 6px)", padding: "10px 20px", cursor: "pointer" }} onClick={() => setShowUnpairConfirm(false)}>Cancel</button>
+        <div className="modalScrim">
+          <div className="confirmDialog" role="dialog" aria-modal="true" aria-labelledby="unpair-title">
+            <h3 id="unpair-title">Unlink device?</h3>
+            <p>This will unlink the device from this plant. All readings are preserved. You can re-pair at any time.</p>
+            <div className="dialogActions">
+              <button className="dangerButton" onClick={() => void unpairDevice()}>Unlink</button>
+              <button className="ghostButton" onClick={() => setShowUnpairConfirm(false)}>Cancel</button>
             </div>
           </div>
         </div>
@@ -1663,6 +1674,8 @@ export function GardenApp() {
             </div>
           )}
 
+          {plant?.id && <BioelectricPanel plantId={plant.id} className={tabHidden(["ia"])} />}
+
           <PlantCalendar
             className={tabHidden(["plus"])}
             plant={plant}
@@ -1716,17 +1729,17 @@ export function GardenApp() {
         </button>
         <p className="small">{bleStatus}</p>
         {plant?.device && (
-          <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px solid var(--line)" }}>
-            <p className="small" style={{ margin: "0 0 8px" }}>Appare: <strong>{plant.device.serial}</strong> — {plant.device.name}</p>
-            <div style={{ display: "flex", gap: "8px" }}>
+          <div className="deviceCard">
+            <p className="deviceMeta">Appareil: <strong>{plant.device.serial}</strong> — {plant.device.name}</p>
+            <div className="deviceActionRow">
               <button className="secondaryButton compactButton" onClick={() => setShowPairingModal(true)}>Re-pair</button>
-              <button style={{ background: "transparent", color: "var(--danger)", border: "1px solid var(--danger)", borderRadius: "var(--radius-sm, 6px)", padding: "6px 14px", cursor: "pointer", fontSize: "0.85rem" }} onClick={() => setShowUnpairConfirm(true)}>Unlink device</button>
+              <button className="dangerGhostButton" onClick={() => setShowUnpairConfirm(true)}>Unlink device</button>
             </div>
           </div>
         )}
         {!plant?.device && plant && (
-          <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px solid var(--line)" }}>
-            <p className="small" style={{ margin: "0 0 8px", color: "var(--muted)" }}>No device linked.</p>
+          <div className="deviceCard subtle">
+            <p className="deviceMeta mutedText">No device linked.</p>
           </div>
         )}
           </section>
@@ -2269,7 +2282,7 @@ function MarkdownText({ text }: { text: string }) {
   const flushList = (key: string) => {
     if (!listItems.length) return;
     blocks.push(
-      <ul key={key} style={{ paddingLeft: "1.2em", margin: "0.25em 0" }}>
+      <ul key={key} className="markdownList">
         {listItems.map((item, i) => <li key={i}>{renderInline(item)}</li>)}
       </ul>
     );
@@ -2281,14 +2294,14 @@ function MarkdownText({ text }: { text: string }) {
     if (/^##\s/.test(line)) {
       flushList(`ul-${idx}`);
       blocks.push(
-        <strong key={key} style={{ display: "block", marginTop: "0.6em", marginBottom: "0.15em", color: "var(--ink)" }}>
+        <strong key={key} className="markdownHeading">
           {renderInline(line.replace(/^##\s/, ""))}
         </strong>
       );
     } else if (/^###\s/.test(line)) {
       flushList(`ul-${idx}`);
       blocks.push(
-        <em key={key} style={{ display: "block", marginTop: "0.4em", fontStyle: "normal", color: "var(--ink-2)" }}>
+        <em key={key} className="markdownSubheading">
           {renderInline(line.replace(/^###\s/, ""))}
         </em>
       );
@@ -2298,7 +2311,7 @@ function MarkdownText({ text }: { text: string }) {
       flushList(`ul-${idx}`);
     } else {
       flushList(`ul-${idx}`);
-      blocks.push(<p key={key} style={{ margin: "0.2em 0" }}>{renderInline(line)}</p>);
+      blocks.push(<p key={key} className="markdownPara">{renderInline(line)}</p>);
     }
   });
   flushList("ul-end");

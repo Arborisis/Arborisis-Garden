@@ -18,6 +18,42 @@ export const telemetrySchema = z.object({
 
 export type TelemetryPayload = z.infer<typeof telemetrySchema>;
 
+// Fenêtre d'acquisition bioélectrique envoyée par le 2e Pico. Bornes prudentes
+// alignées sur telemetrySchema; tous les champs de features sont optionnels car
+// le front-end analogique peut être inconnu (mesure relative en comptes bruts).
+export const bioelectricSchema = z.object({
+  deviceSerial: z.string().min(2).max(80),
+  deviceName: z.string().min(1).max(80).optional(),
+  recordedAt: z.string().datetime().optional(),
+  firmwareVersion: z.string().max(32).optional(),
+  sampleRateHz: z.number().int().min(1).max(20000),
+  windowSeconds: z.number().min(0.1).max(120),
+  sampleCount: z.number().int().min(1).max(200000),
+  channel: z.string().max(16).optional(),
+  gain: z.number().min(0).max(1_000_000).optional(),
+  baselineRaw: z.number().min(0).max(65535).optional(),
+  baselineUv: z.number().min(-10_000_000).max(10_000_000).optional(),
+  meanUv: z.number().min(-10_000_000).max(10_000_000).optional(),
+  rmsUv: z.number().min(0).max(10_000_000).optional(),
+  rmsRaw: z.number().min(0).max(65535).optional(),
+  stdRaw: z.number().min(0).max(65535).optional(),
+  p2pRaw: z.number().min(0).max(65535).optional(),
+  minRaw: z.number().min(0).max(65535).optional(),
+  maxRaw: z.number().min(0).max(65535).optional(),
+  slopeRawPerSec: z.number().min(-1_000_000).max(1_000_000).optional(),
+  spikeCount: z.number().int().min(0).max(100000).optional(),
+  zeroCrossRate: z.number().min(0).max(20000).optional(),
+  bandLowEnergy: z.number().min(0).max(1_000_000_000).optional(),
+  bandMidEnergy: z.number().min(0).max(1_000_000_000).optional(),
+  bandHighEnergy: z.number().min(0).max(1_000_000_000).optional(),
+  qualityFlag: z.enum(["ok", "saturated", "flatline", "noisy", "floating"]).optional(),
+  waveform: z.array(z.number()).max(256).optional(),
+  batteryMv: z.number().int().min(0).max(6000).optional(),
+  wifiRssi: z.number().int().min(-120).max(0).optional()
+});
+
+export type BioelectricPayload = z.infer<typeof bioelectricSchema>;
+
 export const plantUpdateSchema = z.object({
   id: z.string().min(1).optional(),
   name: z.string().min(1).max(80),

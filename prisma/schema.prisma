@@ -11,12 +11,14 @@ model Device {
   id        String   @id @default(cuid())
   serial    String   @unique
   name      String
+  kind      String   @default("environment") // "environment" | "bioelectric"
   tokenHash String?
   lastSeen  DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   plants    Plant[]
   readings  Reading[]
+  bioReadings BioReading[]
 }
 
 model Plant {
@@ -45,6 +47,8 @@ model Plant {
   photos          PlantPhoto[]
   calendarEvents  CalendarEvent[]
   mlSamples       MLTrainingSample[]
+  bioReadings     BioReading[]
+  bioResponses    BioResponseEvent[]
 }
 
 model Reading {
@@ -193,4 +197,66 @@ model PairingCode {
   expiresAt    DateTime
   usedAt       DateTime?
   createdAt    DateTime  @default(now())
+}
+
+// Une fenêtre d'acquisition bioélectrique agrégée par le 2e Pico (biopotentiel
+// tige↔sol). Le firmware échantillonne à haute fréquence, calcule des features
+// par fenêtre + une forme d'onde sous-échantillonnée, et POST le tout ici.
+model BioReading {
+  id             String   @id @default(cuid())
+  deviceId       String
+  plantId        String?
+  recordedAt     DateTime @default(now())
+  firmwareVersion String?
+  sampleRateHz   Int
+  windowSeconds  Float
+  sampleCount    Int
+  channel        String?
+  gain           Float?   // gain du front-end analogique, null si inconnu
+  baselineRaw    Float?
+  baselineUv     Float?
+  meanUv         Float?
+  rmsUv          Float?
+  rmsRaw         Float?
+  stdRaw         Float?
+  p2pRaw         Float?
+  minRaw         Float?
+  maxRaw         Float?
+  slopeRawPerSec Float?
+  spikeCount     Int?
+  zeroCrossRate  Float?
+  bandLowEnergy  Float?
+  bandMidEnergy  Float?
+  bandHighEnergy Float?
+  activityIndex  Float?   // 0-1 normalisé côté serveur (relatif à la baseline plante)
+  qualityFlag    String?  // "ok" | "saturated" | "flatline" | "noisy"
+  waveform       String?  // JSON: forme d'onde décimée (points 0-1)
+  batteryMv      Int?
+  wifiRssi       Int?
+  device         Device   @relation(fields: [deviceId], references: [id])
+  plant          Plant?   @relation(fields: [plantId], references: [id])
+
+  @@index([deviceId, recordedAt])
+  @@index([plantId, recordedAt])
+}
+
+// Résultat de l'analyse long-terme: la plante a-t-elle réagi à un évènement
+// (arrosage détecté via un saut d'humidité du Pico environnemental) ?
+model BioResponseEvent {
+  id            String   @id @default(cuid())
+  plantId       String
+  eventType     String   // "watering" | "light" | "temp" | "unknown"
+  eventAt       DateTime
+  baselineRms   Float
+  responseRms   Float
+  responseRatio Float    // responseRms / baselineRms
+  latencyMin    Float?   // minutes entre l'évènement et le pic d'activité bio
+  reacted       Boolean
+  confidence    Float
+  detail        String?  // JSON libre
+  createdAt     DateTime @default(now())
+  plant         Plant    @relation(fields: [plantId], references: [id])
+
+  @@unique([plantId, eventType, eventAt])
+  @@index([plantId, eventAt])
 }

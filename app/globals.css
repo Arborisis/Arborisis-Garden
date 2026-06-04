@@ -3731,3 +3731,693 @@ label {
 .spinning {
   animation: spin 1s linear infinite;
 }
+
+/* ===================== 2026 PREMIUM REFRESH ===================== */
+
+:root {
+  --bg: #06110d;
+  --surface: #0e1713;
+  --surface-raised: #14221c;
+  --panel: rgba(14, 23, 19, 0.9);
+  --panel-solid: #0d1813;
+
+  --line: rgba(187, 218, 190, 0.13);
+  --line-strong: rgba(187, 218, 190, 0.28);
+  --line-subtle: rgba(187, 218, 190, 0.07);
+
+  --ink: #f3f0e7;
+  --ink-2: #c7d5c6;
+  --muted: #819286;
+  --soft: #51655a;
+
+  --leaf: #7be39a;
+  --leaf-glow: rgba(123, 227, 154, 0.2);
+  --leaf-dim: #1d4f31;
+  --moss: #dbc56d;
+  --sun: #e0a94d;
+  --sun-glow: rgba(224, 169, 77, 0.18);
+  --water: #75cce6;
+  --water-glow: rgba(117, 204, 230, 0.18);
+  --sky: #a7d9ef;
+  --sky-glow: rgba(167, 217, 239, 0.18);
+  --clay: #d57861;
+  --danger: #f07167;
+  --danger-glow: rgba(240, 113, 103, 0.18);
+
+  --shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.4);
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.5), 0 1px 0 rgba(255, 255, 255, 0.045) inset;
+  --shadow-lg: 0 28px 80px rgba(0, 0, 0, 0.62);
+  --glow-leaf: 0 0 24px rgba(123, 227, 154, 0.14);
+  --glow-water: 0 0 24px rgba(117, 204, 230, 0.14);
+  --glow-sun: 0 0 24px rgba(224, 169, 77, 0.14);
+  --glow-danger: 0 0 24px rgba(240, 113, 103, 0.15);
+
+  --radius-xs: 6px;
+  --radius-sm: 7px;
+  --radius-md: 8px;
+  --radius-lg: 8px;
+  --radius-xl: 8px;
+  --radius-2xl: 8px;
+
+  --grad-leaf: linear-gradient(135deg, #8befa7 0%, #57c777 100%);
+  --grad-vital: linear-gradient(135deg, #75cce6 0%, #7be39a 54%, #dbc56d 100%);
+  --grad-glass: linear-gradient(180deg, rgba(255, 255, 255, 0.065) 0%, rgba(255, 255, 255, 0) 46%);
+  --grad-gold: linear-gradient(135deg, #dbc56d 0%, #f2dc86 100%);
+
+  --elev-panel: 0 20px 58px rgba(0, 0, 0, 0.46), 0 1px 0 rgba(255, 255, 255, 0.045) inset;
+  --elev-card: 0 12px 34px rgba(0, 0, 0, 0.34);
+}
+
+* {
+  letter-spacing: 0 !important;
+}
+
+body {
+  background:
+    linear-gradient(145deg, #06110d 0%, #081712 44%, #0b1517 100%);
+}
+
+body::before {
+  background:
+    linear-gradient(115deg, rgba(123, 227, 154, 0.08), transparent 34%),
+    linear-gradient(250deg, rgba(117, 204, 230, 0.07), transparent 38%),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 88px),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.012) 0 1px, transparent 1px 72px);
+}
+
+.shell {
+  width: min(100%, 1480px);
+  padding-top: 14px;
+}
+
+.appShell,
+.dashboardGrid,
+.primaryColumn,
+.sideColumn,
+.heroGrid,
+.metricGrid {
+  gap: 12px;
+}
+
+.appTopbar {
+  top: 12px;
+  border-color: rgba(187, 218, 190, 0.18);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.015)),
+    rgba(6, 17, 13, 0.82);
+  box-shadow:
+    0 16px 44px rgba(0, 0, 0, 0.42),
+    0 1px 0 rgba(255, 255, 255, 0.055) inset;
+}
+
+.brandMark {
+  background:
+    linear-gradient(145deg, rgba(123, 227, 154, 0.22), rgba(117, 204, 230, 0.09)),
+    #0d1813;
+  border-color: rgba(123, 227, 154, 0.3);
+  box-shadow: 0 0 22px rgba(123, 227, 154, 0.14);
+}
+
+.brandLockup strong {
+  font-size: 0.94rem;
+}
+
+.syncPill,
+.installButton,
+.iconButton,
+.primaryButton,
+.secondaryButton,
+.agentPreset,
+.agentToggle,
+.weatherWindowBadge,
+.agentSwitch,
+.uploadButton,
+.calendarTodayButton,
+.statusCheck {
+  border-radius: var(--radius-md);
+}
+
+.heroPanel,
+.carePanel,
+.panel,
+.metric {
+  border-radius: var(--radius-xl);
+  border-color: rgba(187, 218, 190, 0.16);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012)),
+    var(--panel-solid);
+}
+
+.heroPanel {
+  border-color: rgba(123, 227, 154, 0.22);
+  background:
+    linear-gradient(120deg, rgba(123, 227, 154, 0.11), transparent 37%),
+    linear-gradient(270deg, rgba(117, 204, 230, 0.075), transparent 38%),
+    repeating-linear-gradient(105deg, rgba(219, 197, 109, 0.055) 0 1px, transparent 1px 32px),
+    var(--panel-solid);
+}
+
+.heroPanel::before {
+  background:
+    linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.055) 52%, transparent 53%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 42%);
+}
+
+.heroCopy > p:not(.eyebrow) {
+  color: var(--ink-2);
+}
+
+.heroChips span,
+.weatherLocation,
+.sourceList a,
+.toolList span {
+  border-color: rgba(187, 218, 190, 0.16);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.plantLevelBadge {
+  border-color: rgba(123, 227, 154, 0.22);
+  background:
+    linear-gradient(135deg, rgba(123, 227, 154, 0.1), rgba(117, 204, 230, 0.045)),
+    rgba(6, 17, 13, 0.48);
+}
+
+.plantPortrait {
+  border-color: rgba(123, 227, 154, 0.2);
+  background:
+    linear-gradient(135deg, rgba(123, 227, 154, 0.08), rgba(117, 204, 230, 0.045)),
+    rgba(6, 17, 13, 0.38);
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.32),
+    0 0 30px rgba(123, 227, 154, 0.08);
+}
+
+.scoreRing {
+  box-shadow:
+    0 0 0 1px rgba(187, 218, 190, 0.2),
+    0 0 42px rgba(123, 227, 154, 0.16),
+    inset 0 0 30px rgba(0, 0, 0, 0.7);
+}
+
+.carePanel {
+  background:
+    linear-gradient(140deg, rgba(123, 227, 154, 0.13), rgba(219, 197, 109, 0.045) 42%, rgba(117, 204, 230, 0.05)),
+    var(--panel-solid);
+}
+
+.carePanel.watch {
+  background:
+    linear-gradient(140deg, rgba(224, 169, 77, 0.13), rgba(123, 227, 154, 0.04) 50%, rgba(117, 204, 230, 0.035)),
+    var(--panel-solid);
+}
+
+.carePanel.urgent {
+  background:
+    linear-gradient(140deg, rgba(240, 113, 103, 0.16), rgba(224, 169, 77, 0.04) 50%, rgba(117, 204, 230, 0.03)),
+    var(--panel-solid);
+}
+
+.metric {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent),
+    linear-gradient(145deg, color-mix(in srgb, var(--metric-accent) 6%, transparent), transparent 58%),
+    var(--surface);
+}
+
+.panelHeader {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-subtle);
+}
+
+.panelHeader h2,
+.historyHeader h2 {
+  font-size: 1.02rem;
+}
+
+.panelHeader > svg {
+  background: rgba(123, 227, 154, 0.08);
+  border-color: rgba(123, 227, 154, 0.18);
+  color: var(--leaf);
+}
+
+textarea,
+input,
+select,
+.chatInput {
+  border-color: rgba(187, 218, 190, 0.14);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.008)),
+    rgba(6, 17, 13, 0.5);
+}
+
+textarea:focus,
+input:focus,
+select:focus {
+  border-color: rgba(123, 227, 154, 0.4);
+  box-shadow: 0 0 0 3px rgba(123, 227, 154, 0.09);
+}
+
+.primaryButton {
+  background: var(--grad-vital);
+  color: #04100b;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.32) inset,
+    0 14px 34px rgba(123, 227, 154, 0.18);
+}
+
+.primaryButton:hover:not(:disabled) {
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.34) inset,
+    0 18px 42px rgba(123, 227, 154, 0.24),
+    0 0 28px rgba(117, 204, 230, 0.13);
+}
+
+.secondaryButton,
+.ghostButton {
+  border: 1px solid rgba(187, 218, 190, 0.16);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--ink-2);
+}
+
+.secondaryButton:hover:not(:disabled),
+.ghostButton:hover {
+  border-color: rgba(187, 218, 190, 0.3);
+  background: rgba(255, 255, 255, 0.065);
+  color: var(--ink);
+}
+
+.weatherPanel,
+.weatherPanel.avoid,
+.weatherPanel.careful {
+  border-color: rgba(117, 204, 230, 0.18);
+  background:
+    linear-gradient(135deg, rgba(117, 204, 230, 0.11), transparent 42%),
+    linear-gradient(260deg, rgba(123, 227, 154, 0.055), transparent 38%),
+    var(--panel-solid);
+}
+
+.weatherPanel.careful {
+  border-color: rgba(224, 169, 77, 0.22);
+}
+
+.weatherStats,
+.chartGrid,
+.photoGrid,
+.insightList,
+.alertList,
+.agentActions,
+.agentPlan,
+.formGrid {
+  gap: 10px;
+}
+
+.weatherStat,
+.weatherHour,
+.chartCard,
+.insight,
+.alert,
+.photoCard,
+.calendarItem,
+.agentGauge,
+.agentAction,
+.agentTask,
+.agentEvidence,
+.agentUserResponse,
+.calibrationNote,
+.emptyState {
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.006)),
+    rgba(6, 17, 13, 0.42);
+}
+
+.weatherAdvice,
+.answer,
+.agentDiagnosis {
+  border-radius: var(--radius-md);
+}
+
+.chartCard {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent),
+    rgba(6, 17, 13, 0.5);
+}
+
+.agentPanel {
+  border-color: rgba(123, 227, 154, 0.18);
+  background:
+    linear-gradient(145deg, rgba(123, 227, 154, 0.08), transparent 44%),
+    linear-gradient(260deg, rgba(117, 204, 230, 0.07), transparent 38%),
+    var(--panel-solid);
+}
+
+.chatThread,
+.chatComposer,
+.agentResult {
+  border-radius: var(--radius-xl);
+  border-color: rgba(187, 218, 190, 0.14);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 40%),
+    rgba(6, 17, 13, 0.5);
+}
+
+.chatBubble {
+  border-radius: var(--radius-md);
+}
+
+.photoCard {
+  border-color: rgba(187, 218, 190, 0.14);
+}
+
+.photoCard img {
+  filter: saturate(1.05) contrast(1.03);
+}
+
+.uploadButton {
+  background: linear-gradient(135deg, rgba(123, 227, 154, 0.24), rgba(117, 204, 230, 0.16));
+  color: var(--ink);
+}
+
+.calendarPanel {
+  border-color: rgba(219, 197, 109, 0.2);
+  background:
+    linear-gradient(145deg, rgba(219, 197, 109, 0.1), transparent 38%),
+    linear-gradient(260deg, rgba(123, 227, 154, 0.06), transparent 36%),
+    var(--panel-solid);
+}
+
+.calendarHero {
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(135deg, rgba(219, 197, 109, 0.11), rgba(117, 204, 230, 0.045)),
+    rgba(6, 17, 13, 0.48);
+}
+
+.calendarDay {
+  border-radius: 7px;
+}
+
+.bottomNav {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.012)),
+    rgba(6, 17, 13, 0.98);
+  border-color: rgba(187, 218, 190, 0.18);
+  box-shadow: 0 -14px 34px rgba(0, 0, 0, 0.42);
+}
+
+.navItem.active {
+  color: var(--leaf);
+}
+
+.navItem.active svg {
+  filter: drop-shadow(0 0 8px rgba(123, 227, 154, 0.42));
+}
+
+.offlineBanner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 11px 14px;
+  border: 1px solid rgba(240, 113, 103, 0.34);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(135deg, rgba(240, 113, 103, 0.15), rgba(224, 169, 77, 0.06)),
+    rgba(6, 17, 13, 0.72);
+  color: var(--danger);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.26);
+  font-size: 0.9rem;
+}
+
+.offlineBanner span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.modalScrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background:
+    linear-gradient(145deg, rgba(6, 17, 13, 0.86), rgba(6, 11, 16, 0.78));
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+}
+
+.confirmDialog,
+.pairingPanel {
+  display: flex;
+  width: min(100%, 390px);
+  flex-direction: column;
+  gap: 16px;
+  padding: 22px;
+  border: 1px solid rgba(187, 218, 190, 0.22);
+  border-radius: var(--radius-xl);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.012)),
+    var(--surface-raised);
+  box-shadow: var(--shadow-lg);
+}
+
+.confirmDialog h3,
+.pairingPanel h3 {
+  margin: 0;
+  color: var(--ink);
+  font-family: "Syne", sans-serif;
+  font-size: 1.12rem;
+  font-weight: 800;
+}
+
+.confirmDialog p,
+.pairingCopy {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.pairingCopy strong {
+  color: var(--sun);
+}
+
+.pairingMuted,
+.pairingSuccess,
+.pairingError {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.pairingMuted {
+  color: var(--muted);
+}
+
+.pairingMuted.centered {
+  text-align: center;
+}
+
+.pairingSuccess {
+  color: var(--leaf);
+  font-weight: 800;
+}
+
+.pairingError {
+  color: var(--danger);
+}
+
+.pairingCode {
+  user-select: all;
+  padding: 16px;
+  border: 1px solid rgba(123, 227, 154, 0.24);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(135deg, rgba(123, 227, 154, 0.1), rgba(117, 204, 230, 0.055)),
+    var(--surface);
+  color: var(--leaf);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: clamp(2rem, 12vw, 2.5rem);
+  font-weight: 800;
+  text-align: center;
+}
+
+.dialogActions,
+.deviceActionRow {
+  display: flex;
+  gap: 8px;
+}
+
+.dangerButton,
+.ghostButton,
+.dangerGhostButton {
+  min-height: 42px;
+  padding: 0 16px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-weight: 800;
+  transition: all 0.16s ease;
+}
+
+.dangerButton {
+  border: 1px solid rgba(240, 113, 103, 0.38);
+  background: linear-gradient(135deg, #f07167, #d95b54);
+  color: #fff;
+  box-shadow: 0 12px 28px rgba(240, 113, 103, 0.16);
+}
+
+.dangerButton:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 18px 34px rgba(240, 113, 103, 0.22);
+}
+
+.ghostButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dangerGhostButton {
+  border: 1px solid rgba(240, 113, 103, 0.34);
+  background: rgba(240, 113, 103, 0.06);
+  color: var(--danger);
+}
+
+.dangerGhostButton:hover {
+  background: rgba(240, 113, 103, 0.12);
+  border-color: rgba(240, 113, 103, 0.48);
+}
+
+.dangerGhostButton.compact {
+  min-height: 34px;
+  margin-left: auto;
+  padding: 0 12px;
+  font-size: 0.8rem;
+}
+
+.deviceCard {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.deviceCard.subtle {
+  opacity: 0.9;
+}
+
+.deviceMeta {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.deviceMeta strong {
+  color: var(--ink);
+}
+
+.mutedText {
+  color: var(--muted);
+}
+
+.markdownList {
+  margin: 0.25em 0;
+  padding-left: 1.2em;
+}
+
+.markdownHeading {
+  display: block;
+  margin-top: 0.6em;
+  margin-bottom: 0.15em;
+  color: var(--ink);
+}
+
+.markdownSubheading {
+  display: block;
+  margin-top: 0.4em;
+  color: var(--ink-2);
+  font-style: normal;
+}
+
+.markdownPara {
+  margin: 0.2em 0;
+}
+
+@media (min-width: 980px) {
+  .shell {
+    padding: 26px 26px 48px;
+  }
+
+  h1 {
+    font-size: 3.14rem;
+  }
+
+  .heroGrid {
+    grid-template-columns: minmax(0, 2fr) minmax(330px, 0.86fr);
+  }
+
+  .dashboardGrid {
+    grid-template-columns: minmax(0, 1.58fr) minmax(330px, 0.82fr);
+  }
+
+  .metricGrid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .panel {
+    padding: 22px;
+  }
+}
+
+@media (min-width: 1180px) {
+  .dashboardGrid,
+  .primaryColumn,
+  .sideColumn {
+    gap: 14px;
+  }
+
+  .heroGrid,
+  .metricGrid {
+    gap: 14px;
+  }
+}
+
+@media (max-width: 639px) {
+  .topActions {
+    gap: 6px;
+  }
+
+  .brandLockup {
+    gap: 8px;
+  }
+
+  .brandMark {
+    flex-basis: 34px;
+    width: 34px;
+    height: 34px;
+  }
+
+  .heroPanel {
+    padding: 18px;
+  }
+
+  .dialogActions,
+  .deviceActionRow {
+    flex-direction: column;
+  }
+
+  .dangerButton,
+  .ghostButton,
+  .dangerGhostButton,
+  .deviceActionRow .compactButton {
+    width: 100%;
+  }
+
+  .offlineBanner {
+    align-items: flex-start;
+  }
+}

@@ -34,6 +34,12 @@ export type MLFeatures = {
   insightUrgentRatio: number
   insightCoverage: number         // count / 4 (max insights)
 
+  // Bioelectric cluster (neutral priors when no bio device)
+  bioActivityNorm: number         // 0-1 activité bioélectrique moyenne récente (0.5 prior)
+  bioResponsiveness: number       // 0-1 force de réaction aux stimuli (0.5 prior)
+  bioQuality: number              // 0-1 fraction de fenêtres de signal "ok" (0.5 prior)
+  bioFreshness: number            // exp(-gapHours/24), 0 quand aucune mesure bio
+
   // Alert cluster
   openAlertCountNorm: number      // count / 5
   hasCriticalAlert: number        // 0 or 1
@@ -54,6 +60,7 @@ export type MLPrediction = {
     visualScore: number
     weatherRisk: number      // 0-100 where 100 = high risk
     llmConsensus: number
+    bioScore: number         // 0-100 expert bioélectrique (responsivité/qualité)
   }
   dominantSignals: string[]
   generatedAt: string
@@ -67,12 +74,13 @@ export type LegacyWeights = {
   llm: number
 }
 
-/** Softmax logits over the 4 domain experts (unconstrained, always sum-to-1 after softmax). */
+/** Softmax logits over the 5 domain experts (unconstrained, always sum-to-1 after softmax). */
 export type ExpertLogits = {
   sensor: number
   visual: number
   weather: number
   llm: number
+  bio: number
 }
 
 /**
@@ -103,14 +111,15 @@ export type ModelWeights = {
   residual: ResidualHead
 }
 
-/** Logits chosen so softmax ≈ the historical v1 default blend. */
+/** Logits chosen so softmax ≈ the historical default blend, plus a small bio share. */
 export const DEFAULT_WEIGHTS: ModelWeights = {
   version: 2,
   experts: {
-    sensor: Math.log(0.45),
-    visual: Math.log(0.30),
-    weather: Math.log(0.15),
-    llm: Math.log(0.10)
+    sensor: Math.log(0.42),
+    visual: Math.log(0.28),
+    weather: Math.log(0.14),
+    llm: Math.log(0.09),
+    bio: Math.log(0.07)
   },
   residual: {
     kind: "none",

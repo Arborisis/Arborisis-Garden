@@ -69,3 +69,27 @@ export function computeLlmConsensus(f: MLFeatures): number {
     f.insightUrgentRatio * 15
   )
 }
+
+/**
+ * Expert bioélectrique. Lecture santé du biopotentiel: une plante saine montre
+ * un signal de bonne qualité, une activité modérée, et qui réagit aux stimuli
+ * (arrosage). Hyper-activité chronique = stress; quasi-flatline de bonne qualité
+ * = plante atone. Sans signal frais, renvoie un neutre 60 (comme l'expert LLM
+ * sans insight) pour ne pas peser sur les plantes dépourvues de Pico bio.
+ * Tolère les features absentes (anciens échantillons d'entraînement).
+ */
+export function computeBioScore(f: MLFeatures): number {
+  const freshness = f.bioFreshness ?? 0
+  if (freshness <= 0) return 60
+
+  const responsiveness = f.bioResponsiveness ?? 0.5
+  const activity = f.bioActivityNorm ?? 0.5
+  const quality = f.bioQuality ?? 0.5
+
+  const activityPenalty =
+    activity > 0.85 ? (activity - 0.85) * 200 : activity < 0.1 ? (0.1 - activity) * 150 : 0
+  const base = 55 + responsiveness * 35 - (1 - quality) * 25 - activityPenalty
+
+  // Pondéré par la fraîcheur: un signal ancien tire le score vers le neutre 60.
+  return c100(60 * (1 - freshness) + base * freshness)
+}

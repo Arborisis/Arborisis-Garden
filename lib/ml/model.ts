@@ -21,6 +21,7 @@ export function predict(
   const visualScore = scores.visual
   const weatherRisk = 100 - scores.weather
   const llmConsensus = scores.llm
+  const bioScore = scores.bio
 
   const alertPenalty = features.hasCriticalAlert * 15 + features.openAlertCountNorm * 10
   const healthScore = Math.max(0, Math.min(100, health - alertPenalty))
@@ -61,7 +62,8 @@ export function predict(
     ['Humidité sol', sensorScore * mix.sensor],
     ['Analyse visuelle', visualScore * mix.visual],
     ['Météo', scores.weather * mix.weather],
-    ['Intelligence LLM', llmConsensus * mix.llm]
+    ['Intelligence LLM', llmConsensus * mix.llm],
+    ['Bioélectricité', bioScore * mix.bio]
   ]
   const dominantSignals = [...clusters]
     .sort((a, b) => b[1] - a[1])
@@ -89,7 +91,8 @@ export function predict(
       sensorScore: Math.round(sensorScore),
       visualScore: Math.round(visualScore),
       weatherRisk: Math.round(weatherRisk),
-      llmConsensus: Math.round(llmConsensus)
+      llmConsensus: Math.round(llmConsensus),
+      bioScore: Math.round(bioScore)
     },
     dominantSignals,
     generatedAt: new Date().toISOString()

@@ -2,6 +2,10 @@
 
 MicroPython firmware for Raspberry Pi Pico WH + Grove Shield for Pi Pico v1.
 
+> Mesure **environnementale** (humidité, températures, lumière, BME280). Pour la
+> mesure **bioélectrique** de la plante sur un 2e Pico, voir
+> [`../firmware-bio/`](../firmware-bio/README.md) (POST vers `/api/bioelectric`).
+
 ## What's new in 0.2.0
 
 - **Hardware watchdog** (`WDT`, ~8 s) auto-recovers from hangs; the main loop is

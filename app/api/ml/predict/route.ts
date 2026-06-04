@@ -42,7 +42,9 @@ export async function GET(req: Request) {
     include: {
       readings: { orderBy: { recordedAt: "desc" }, take: 48 },
       alerts: { where: { status: "open" }, orderBy: { createdAt: "desc" }, take: 20 },
-      photos: { orderBy: { createdAt: "desc" }, take: 6 }
+      photos: { orderBy: { createdAt: "desc" }, take: 6 },
+      bioReadings: { orderBy: { recordedAt: "desc" }, take: 60 },
+      bioResponses: { orderBy: { eventAt: "desc" }, take: 20 }
     }
   })
   if (!plant) {
@@ -66,7 +68,9 @@ export async function GET(req: Request) {
     weather,
     plant.photos,
     cachedInsights,
-    plant.alerts
+    plant.alerts,
+    undefined,
+    { readings: plant.bioReadings, responses: plant.bioResponses }
   )
 
   const prediction = predict(features, activeWeights)

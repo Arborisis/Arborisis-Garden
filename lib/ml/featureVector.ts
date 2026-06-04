@@ -37,23 +37,27 @@ export const FEATURE_KEYS: (keyof MLFeatures)[] = [
   "insightWatchRatio",
   "insightUrgentRatio",
   "insightCoverage",
+  "bioActivityNorm",
+  "bioResponsiveness",
+  "bioQuality",
+  "bioFreshness",
   "openAlertCountNorm",
   "hasCriticalAlert"
 ]
 
-/** Number of appended engineered expert scores (sensor, visual, weather, llm). */
-export const EXPERT_FEATURE_COUNT = 4
+/** Number of appended engineered expert scores (sensor, visual, weather, llm, bio). */
+export const EXPERT_FEATURE_COUNT = 5
 
 /** Total input dimension of the residual head. */
 export const INPUT_DIM = FEATURE_KEYS.length + EXPERT_FEATURE_COUNT
 
 /**
  * Build the residual-head input vector: the normalized features followed by the
- * 4 engineered expert scores (each rescaled to 0-1).
+ * 5 engineered expert scores (each rescaled to 0-1).
  */
 export function toVector(
   f: MLFeatures,
-  experts: { sensor: number; visual: number; weather: number; llm: number }
+  experts: { sensor: number; visual: number; weather: number; llm: number; bio: number }
 ): number[] {
   const base = FEATURE_KEYS.map(k => {
     const v = f[k]
@@ -63,7 +67,8 @@ export function toVector(
     experts.sensor / 100,
     experts.visual / 100,
     experts.weather / 100,
-    experts.llm / 100
+    experts.llm / 100,
+    experts.bio / 100
   )
   return base
 }

@@ -220,6 +220,25 @@ No hard reset is needed; the watchdog will pick up the new code on the next cras
 | 0.1.1 | TSL2561 lux scaling fix (normalise raw counts to 402 ms / 16× reference before datasheet formula) |
 | 0.1.0 | Initial release |
 
+### Bioelectric firmware (2nd Pico) — `firmware-bio/`
+
+A **separate, standalone firmware** for a second Pico W/WH that measures plant
+**bioelectricity** (stem↔soil biopotential) through an analog front-end
+(AD8232 / Grove EMG / INA instrumentation amp). It samples a window
+(default 128 Hz × 4 s), computes per-window features + a decimated waveform, and
+POSTs to `/api/bioelectric`. The server **auto-attaches** these readings to the
+plant of the most recently active environmental Pico, then correlates bio
+activity around watering events to detect whether the plant **reacts** (surfaced
+in the **Bioélectricité** panel and fed to the ML bio expert + LLM insights).
+
+```bash
+mpremote cp firmware-bio/config.py firmware-bio/main.py firmware-bio/biosignal.py :
+```
+
+Wiring, electrode placement, front-end options and gain calibration:
+see [`firmware-bio/README.md`](firmware-bio/README.md). Sampling frequency and
+window length are tunable from the setup page (no reflash).
+
 ---
 
 ## Architecture
@@ -308,6 +327,7 @@ GET /api/ml/predict?plantId=…
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/api/telemetry` | Receive sensor reading from Pico; auth: `X-Device-Token` |
+| `GET/POST` | `/api/bioelectric` | Bioelectric window from 2nd Pico (POST, `X-Device-Token`) / list readings + detected reactions (GET) |
 | `GET` | `/api/plants` | List plants |
 | `POST` | `/api/plants` | Create plant |
 | `POST` | `/api/plants/calibrate` | Update moisture calibration (dry/wet raw values) |
