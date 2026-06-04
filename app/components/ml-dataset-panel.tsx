@@ -127,7 +127,7 @@ export function MLDatasetPanel({ plantId }: { plantId?: string }) {
   };
 
   return (
-    <section className="card mlCard">
+    <section className="card mlCard mlDatasetPanel">
       <header className="mlHeader">
         <div className="mlHeaderTitle">
           <Database size={18} />
@@ -143,23 +143,25 @@ export function MLDatasetPanel({ plantId }: { plantId?: string }) {
         (snapshot immuable), entraînez un modèle et publiez (JSONL/CSV, export Hugging Face, datasheet).
       </p>
 
-      <div className="mlDatasetBuilder" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", margin: "0.5rem 0" }}>
+      <div className="mlDatasetBuilder">
         <input
+          className="mlDatasetInput"
           placeholder="Nom du dataset (ex: Santé jardin été)"
           value={name}
           onChange={(e) => setName(e.target.value)}
           disabled={busy}
-          style={{ flex: 1, minWidth: 180 }}
         />
-        {plantId && (
-          <label className="muted" style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.8rem" }}>
-            <input type="checkbox" checked={scopeToPlant} onChange={(e) => setScopeToPlant(e.target.checked)} />
-            Cette plante seule
-          </label>
-        )}
-        <button className="primaryButton" onClick={buildDataset} disabled={busy}>
-          <Layers size={15} /> Construire
-        </button>
+        <div className="mlDatasetBuilderRow">
+          {plantId && (
+            <label className="muted mlDatasetCheck">
+              <input type="checkbox" checked={scopeToPlant} onChange={(e) => setScopeToPlant(e.target.checked)} />
+              Cette plante seule
+            </label>
+          )}
+          <button className="primaryButton mlInlineButton" onClick={buildDataset} disabled={busy}>
+            <Layers size={15} /> Construire
+          </button>
+        </div>
       </div>
 
       {status && <p className="mlStatus" style={{ fontSize: "0.8rem" }}>{status}</p>}
@@ -195,28 +197,27 @@ export function MLDatasetPanel({ plantId }: { plantId?: string }) {
                 </div>
               )}
 
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
+              <div className="mlDatasetActions">
                 {d.status === "draft" && (
-                  <button className="secondaryButton" disabled={busy || d.sampleCount < 1} onClick={() => void runAction("Gel", `/api/ml/dataset/freeze?id=${d.id}`)}>
+                  <button className="secondaryButton mlInlineButton" disabled={busy || d.sampleCount < 1} onClick={() => void runAction("Gel", `/api/ml/dataset/freeze?id=${d.id}`)}>
                     <Snowflake size={14} /> Figer
                   </button>
                 )}
                 {(d.status === "frozen" || d.status === "published") && (
-                  <button className="secondaryButton" disabled={busy || d.sampleCount < 3} onClick={() => void runAction("Entraînement", `/api/ml/dataset/train?id=${d.id}`)}>
+                  <button className="secondaryButton mlInlineButton" disabled={busy || d.sampleCount < 3} onClick={() => void runAction("Entraînement", `/api/ml/dataset/train?id=${d.id}`)}>
                     <FlaskConical size={14} /> Entraîner
                   </button>
                 )}
                 {d.status === "frozen" && (
-                  <button className="secondaryButton" disabled={busy} onClick={() => void runAction("Publication", `/api/ml/dataset/publish?id=${d.id}`)}>
+                  <button className="secondaryButton mlInlineButton" disabled={busy} onClick={() => void runAction("Publication", `/api/ml/dataset/publish?id=${d.id}`)}>
                     <UploadCloud size={14} /> Publier
                   </button>
                 )}
                 {(["jsonl", "csv", "hf", "datasheet"] as const).map((fmt) => (
                   <a
                     key={fmt}
-                    className="secondaryButton"
+                    className="secondaryButton mlInlineButton mlDatasetExport"
                     href={`/api/ml/dataset/export?id=${d.id}&format=${fmt}${fmt === "jsonl" || fmt === "csv" ? "&gzip=1" : ""}`}
-                    style={{ textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}
                   >
                     <Download size={13} /> {fmt}
                   </a>
