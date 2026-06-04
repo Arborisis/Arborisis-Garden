@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Activity, AlertTriangle, CheckCircle2, RefreshCw, Zap } from "lucide-react";
+import { Activity, AlertTriangle, BrainCircuit, CheckCircle2, RefreshCw, Zap } from "lucide-react";
 
 const ACCENT = "var(--bloom, #b06ab3)";
 
@@ -27,6 +27,11 @@ type BioReadingRow = {
   waveform: string | null;
   firmwareVersion: string | null;
   wifiRssi: number | null;
+  signalMl?: {
+    signalConfidence: number;
+    pattern: string;
+    learnedFromWindows: number;
+  } | null;
 };
 
 type BioResponseRow = {
@@ -59,6 +64,18 @@ function formatDate(iso: string): string {
     });
   } catch {
     return iso.slice(0, 16).replace("T", " ");
+  }
+}
+
+function formatPattern(pattern: string | null | undefined): string {
+  switch (pattern) {
+    case "baseline": return "baseline apprise";
+    case "recoverable_noise": return "bruit récupérable";
+    case "spike_burst": return "salve de pics";
+    case "slow_drift": return "dérive lente";
+    case "flatline": return "signal plat";
+    case "saturation": return "saturation";
+    default: return "motif inconnu";
   }
 }
 
@@ -136,6 +153,8 @@ export function BioelectricPanel({ plantId, className }: { plantId: string; clas
 
   const latest = readings[0];
   const activityPct = latest?.activityIndex != null ? Math.round(latest.activityIndex * 100) : null;
+  const signalConfidencePct =
+    latest?.signalMl?.signalConfidence != null ? Math.round(latest.signalMl.signalConfidence * 100) : null;
   const okCount = readings.filter((r) => r.qualityFlag === "ok").length;
   const qualityPct = readings.length ? Math.round((okCount / readings.length) * 100) : null;
   const reactedCount = responses.filter((r) => r.reacted).length;
@@ -188,6 +207,10 @@ export function BioelectricPanel({ plantId, className }: { plantId: string; clas
               <span className="muted small">Réactions</span>
               <strong style={{ fontSize: 26 }}>{reactedCount}</strong>
             </div>
+            <div style={bioStatStyle}>
+              <span className="muted small">ML signal</span>
+              <strong style={{ fontSize: 26 }}>{signalConfidencePct != null ? `${signalConfidencePct}%` : "—"}</strong>
+            </div>
           </div>
 
           {contactWarning && (
@@ -213,6 +236,12 @@ export function BioelectricPanel({ plantId, className }: { plantId: string; clas
               <Zap size={13} /> Dernière fenêtre · {latest ? formatDate(latest.recordedAt) : "—"}
               {latest?.qualityFlag ? ` · ${latest.qualityFlag}` : ""}
             </span>
+            {latest?.signalMl && (
+              <span className="muted small" style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
+                <BrainCircuit size={13} /> {formatPattern(latest.signalMl.pattern)}
+                {latest.signalMl.learnedFromWindows ? ` · appris sur ${latest.signalMl.learnedFromWindows} fenêtres` : ""}
+              </span>
+            )}
             <Sparkline points={waveform} />
           </div>
 

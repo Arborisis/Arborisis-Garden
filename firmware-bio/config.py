@@ -10,6 +10,8 @@ COUNTRY = "BE"
 # Voie analogique DEJA amplifiee (sortie du front-end: AD8232 / Grove EMG / ampli
 # d'instrumentation INA biaise a mi-rail). Le signal brut d'une plante est en uV;
 # il DOIT passer par un etage de gain avant l'ADC du Pico.
+# Analog-capable pins on Pico W are GP26/ADC0, GP27/ADC1 and GP28/ADC2.
+# The setup page can override this with bio_adc_pin.
 BIO_ADC_PIN = 26              # A0 sur le Grove Shield for Pi Pico.
 BIO_REF_ADC_PIN = None        # 2e voie differentielle optionnelle (non utilisee par defaut).
 
@@ -17,6 +19,10 @@ BIO_REF_ADC_PIN = None        # 2e voie differentielle optionnelle (non utilisee
 # Reglables aussi a chaud via la page de setup (sample_rate_hz / window_seconds).
 SAMPLE_RATE_HZ = 128
 WINDOW_SECONDS = 4
+BIO_AUTO_CONFIG = 1
+BIO_AUTO_SAMPLE_RATE_HZ = 64
+BIO_AUTO_WINDOW_SECONDS = 8
+BIO_AUTO_OVERSAMPLE = 32
 # Acquisition par paquets: le watchdog est nourri entre chaque paquet, donc une
 # fenetre longue ne declenche jamais un reset (cf. firmware env, contrainte WDT).
 CHUNK_SAMPLES = 128
@@ -86,6 +92,8 @@ DEFAULT_CONFIG = {
     "sample_seconds": DEFAULT_SAMPLE_SECONDS,
     "sample_rate_hz": SAMPLE_RATE_HZ,
     "window_seconds": WINDOW_SECONDS,
+    "bio_auto_config": BIO_AUTO_CONFIG,
+    "bio_adc_pin": BIO_ADC_PIN,
     "bio_gain": BIO_GAIN,
     "bio_uv_per_count": BIO_UV_PER_COUNT,
     "bio_bias_raw": BIO_BIAS_RAW,

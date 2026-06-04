@@ -61,7 +61,10 @@ Tu peux brancher les électrodes **directement** sur l'entrée analogique, sans
 
 ## Câblage
 - Grove Shield power switch : **3.3V**.
-- Voie bio : analogique `A0`, Pico `GP26` (`BIO_ADC_PIN`).
+- Voie bio : analogique `A0`, Pico `GP26` (`BIO_ADC_PIN`) par défaut.
+  Tu peux utiliser `GP27` ou `GP28` à la place en mettant `bio_adc_pin` à
+  `27` ou `28` sur la page setup. Les autres pins GP ne sont pas des entrées
+  analogiques ADC sur Pico W.
 - (Optionnel) batterie : `GP29` / ADC3 via diviseur interne 3:1 (`BATTERY_ADC_PIN = 29`).
 
 ## Premier démarrage
@@ -74,6 +77,9 @@ Tu peux brancher les électrodes **directement** sur l'entrée analogique, sans
    - **Device token** = `DEVICE_INGEST_TOKEN` du serveur.
    - **Fréquence d'échantillonnage** (`sample_rate_hz`, défaut 128) et **durée de
      fenêtre** (`window_seconds`, défaut 4 s) — réglables ici sans reflasher.
+   - **Config auto** (`bio_auto_config = 1`) applique les réglages recommandés
+     pour électrodes directes : 64 Hz, fenêtre 8 s, sur-échantillonnage 32.
+   - **Pin analogique** (`bio_adc_pin`) : `26` = A0, `27` = A1, `28` = A2.
    - **Gain** du front-end (`bio_gain`, `0` = inconnu), `bio_uv_per_count`
      (≈ 50,35 µV/compte à gain 1), et offset DC (`bio_bias_raw`, `0` = baseline auto).
 

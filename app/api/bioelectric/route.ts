@@ -7,6 +7,7 @@ import {
   computeActivityIndex,
   detectResponses,
 } from "@/lib/bioelectric/analysis";
+import { analyzeAdaptiveBioSignal, analyzeStoredBioReadings } from "@/lib/bioelectric/adaptive-model";
 
 export const runtime = "nodejs";
 
@@ -46,7 +47,9 @@ export async function POST(request: NextRequest) {
 
   const rms = payload.rmsRaw ?? payload.rmsUv ?? null;
   const baselineRms = await recentBaselineRms(prisma, plant.id);
-  const activityIndex = computeActivityIndex(rms, baselineRms);
+  const signalMl = await analyzeAdaptiveBioSignal(prisma, plant.id, payload, baselineRms);
+  const activityIndex = signalMl.activityIndex ?? computeActivityIndex(rms, baselineRms);
+  const waveform = signalMl.denoisedWaveform.length > 0 ? signalMl.denoisedWaveform : payload.waveform;
 
   const reading = await prisma.bioReading.create({
     data: {
@@ -76,7 +79,7 @@ export async function POST(request: NextRequest) {
       bandHighEnergy: payload.bandHighEnergy,
       activityIndex,
       qualityFlag: payload.qualityFlag,
-      waveform: payload.waveform ? JSON.stringify(payload.waveform) : undefined,
+      waveform: waveform ? JSON.stringify(waveform) : undefined,
       batteryMv: payload.batteryMv,
       wifiRssi: payload.wifiRssi,
     },
@@ -93,6 +96,9 @@ export async function POST(request: NextRequest) {
       plantId: plant.id,
       activityIndex,
       quality: payload.qualityFlag ?? null,
+      signalConfidence: signalMl.signalConfidence,
+      pattern: signalMl.pattern,
+      learnedFromWindows: signalMl.learnedFromWindows,
       latencyMs: Date.now() - start,
       status: 200,
     })
@@ -119,7 +125,7 @@ export async function GET(request: NextRequest) {
   // Passe d'analyse bornée à la lecture (idempotente) pour rafraîchir l'UI.
   await detectResponses(prisma, plantId, { sinceHours: 72 }).catch(() => null);
 
-  const [readings, responses] = await Promise.all([
+  const [readings, responses, baselineRms] = await Promise.all([
     prisma.bioReading.findMany({
       where: { plantId },
       orderBy: { recordedAt: "desc" },
@@ -130,7 +136,13 @@ export async function GET(request: NextRequest) {
       orderBy: { eventAt: "desc" },
       take: 20,
     }),
+    recentBaselineRms(prisma, plantId),
   ]);
+  const signalMlById = analyzeStoredBioReadings(readings, responses, baselineRms);
+  const readingsWithMl = readings.map((reading) => ({
+    ...reading,
+    signalMl: signalMlById.get(reading.id) ?? null,
+  }));
 
-  return NextResponse.json({ plantId, readings, responses });
+  return NextResponse.json({ plantId, readings: readingsWithMl, responses });
 }

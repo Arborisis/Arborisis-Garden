@@ -24,7 +24,8 @@ class ArborisisBioPico:
         self.device_serial = ubinascii.hexlify(machine.unique_id()).decode()
         self.device_name = "{}-{}".format(config.DEVICE_NAME_PREFIX, self.device_serial[-6:])
         self.settings = self.load_config()
-        self.adc = ADC(Pin(config.BIO_ADC_PIN))
+        self.bio_adc_pin = self.resolve_adc_pin()
+        self.adc = ADC(Pin(self.bio_adc_pin))
         self.battery_adc = ADC(Pin(config.BATTERY_ADC_PIN)) if config.BATTERY_ADC_PIN is not None else None
         self.led = self.init_led()
         self.web_server = None
@@ -102,6 +103,14 @@ class ArborisisBioPico:
         except Exception:
             return default
 
+    def resolve_adc_pin(self):
+        pin = self.cfg_int("bio_adc_pin", config.BIO_ADC_PIN)
+        if pin not in (26, 27, 28):
+            print("Invalid bio_adc_pin:", pin, "using", config.BIO_ADC_PIN)
+            pin = config.BIO_ADC_PIN
+            self.settings["bio_adc_pin"] = pin
+        return pin
+
     # -- sensor reads ----------------------------------------------------------
 
     def read_battery_mv(self):
@@ -116,14 +125,20 @@ class ArborisisBioPico:
         return int(raw * 3300 / 65535 * config.BATTERY_DIVIDER)
 
     def read_payload(self):
-        rate = self.cfg_int("sample_rate_hz", config.SAMPLE_RATE_HZ)
-        window = self.cfg_float("window_seconds", config.WINDOW_SECONDS)
+        auto_config = self.cfg_int("bio_auto_config", getattr(config, "BIO_AUTO_CONFIG", 1)) > 0
+        if auto_config:
+            rate = getattr(config, "BIO_AUTO_SAMPLE_RATE_HZ", 64)
+            window = getattr(config, "BIO_AUTO_WINDOW_SECONDS", 8)
+            oversample = getattr(config, "BIO_AUTO_OVERSAMPLE", 32)
+        else:
+            rate = self.cfg_int("sample_rate_hz", config.SAMPLE_RATE_HZ)
+            window = self.cfg_float("window_seconds", config.WINDOW_SECONDS)
+            oversample = self.cfg_int("bio_oversample", config.BIO_OVERSAMPLE)
         total = max(1, int(rate * window))
         # Borne le paquet a ~1 s de signal pour rester loin de la fenetre du WDT.
         chunk = max(1, min(config.CHUNK_SAMPLES, int(rate)))
         bias_cfg = self.cfg_int("bio_bias_raw", 0)
         bias = bias_cfg if bias_cfg > 0 else None
-        oversample = self.cfg_int("bio_oversample", config.BIO_OVERSAMPLE)
 
         samples = biosignal.sample_window(self.adc, rate, total, chunk, self.feed, oversample)
         feats = biosignal.analyze(
@@ -140,7 +155,7 @@ class ArborisisBioPico:
             "sampleRateHz": rate,
             "windowSeconds": window,
             "sampleCount": feats.get("sampleCount", total),
-            "channel": "A0",
+            "channel": "GP{}".format(self.bio_adc_pin),
             "baselineRaw": feats.get("baselineRaw"),
             "rmsRaw": feats.get("rmsRaw"),
             "stdRaw": feats.get("stdRaw"),
@@ -556,8 +571,10 @@ POST ok {ok}/ko {ko} &middot; dernier {last} &middot; RAM {mem} o &middot; horlo
 <input name="password" placeholder="Wi-Fi password" type="password" value="{password}"><br>
 <input name="api_url" placeholder="API URL (/api/bioelectric)" value="{api_url}"><br>
 <input name="device_token" placeholder="Device token" value="{token}"><br>
+<input name="bio_auto_config" placeholder="Config auto electrodes directes (1/0)" value="{auto_config}"><br>
 <input name="sample_rate_hz" placeholder="Frequence d'echantillonnage (Hz)" value="{rate}"><br>
 <input name="window_seconds" placeholder="Duree fenetre (s)" value="{window}"><br>
+<input name="bio_adc_pin" placeholder="Pin analogique GP26/GP27/GP28" value="{adc_pin}"><br>
 <input name="bio_gain" placeholder="Gain front-end (0 = inconnu)" value="{gain}"><br>
 <input name="bio_uv_per_count" placeholder="uV par compte a gain 1" value="{uvpc}"><br>
 <input name="bio_bias_raw" placeholder="Offset DC en comptes (0 = auto)" value="{bias}"><br>
@@ -569,8 +586,10 @@ POST ok {ok}/ko {ko} &middot; dernier {last} &middot; RAM {mem} o &middot; horlo
             password=self.settings.get("password", ""),
             api_url=self.settings.get("api_url", ""),
             token=self.settings.get("device_token", ""),
+            auto_config=self.settings.get("bio_auto_config", getattr(config, "BIO_AUTO_CONFIG", 1)),
             rate=self.settings.get("sample_rate_hz", config.SAMPLE_RATE_HZ),
             window=self.settings.get("window_seconds", config.WINDOW_SECONDS),
+            adc_pin=self.settings.get("bio_adc_pin", config.BIO_ADC_PIN),
             gain=self.settings.get("bio_gain", config.BIO_GAIN),
             uvpc=self.settings.get("bio_uv_per_count", config.BIO_UV_PER_COUNT),
             bias=self.settings.get("bio_bias_raw", config.BIO_BIAS_RAW),
