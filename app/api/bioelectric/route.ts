@@ -8,6 +8,7 @@ import {
   detectResponses,
 } from "@/lib/bioelectric/analysis";
 import { analyzeAdaptiveBioSignal, analyzeStoredBioReadings } from "@/lib/bioelectric/adaptive-model";
+import { analyzeEnvironmentalCoupling } from "@/lib/bioelectric/coupling";
 
 export const runtime = "nodejs";
 
@@ -125,7 +126,7 @@ export async function GET(request: NextRequest) {
   // Passe d'analyse bornée à la lecture (idempotente) pour rafraîchir l'UI.
   await detectResponses(prisma, plantId, { sinceHours: 72 }).catch(() => null);
 
-  const [readings, responses, baselineRms] = await Promise.all([
+  const [readings, responses, baselineRms, coupling] = await Promise.all([
     prisma.bioReading.findMany({
       where: { plantId },
       orderBy: { recordedAt: "desc" },
@@ -137,6 +138,7 @@ export async function GET(request: NextRequest) {
       take: 20,
     }),
     recentBaselineRms(prisma, plantId),
+    analyzeEnvironmentalCoupling(prisma, plantId).catch(() => null),
   ]);
   const signalMlById = analyzeStoredBioReadings(readings, responses, baselineRms);
   const readingsWithMl = readings.map((reading) => ({
@@ -144,5 +146,5 @@ export async function GET(request: NextRequest) {
     signalMl: signalMlById.get(reading.id) ?? null,
   }));
 
-  return NextResponse.json({ plantId, readings: readingsWithMl, responses });
+  return NextResponse.json({ plantId, readings: readingsWithMl, responses, coupling });
 }

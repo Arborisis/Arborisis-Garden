@@ -2,6 +2,8 @@ import { telemetrySchema } from "../lib/schemas";
 import { evaluateReading } from "../lib/rules";
 import { parseAiInsightsResponse } from "../lib/insights";
 import { analyzeStoredBioReadings } from "../lib/bioelectric/adaptive-model";
+import { detectEnvironmentEvents } from "../lib/bioelectric/analysis";
+import { computeCoupling } from "../lib/bioelectric/coupling";
 import type { BioReading } from "@prisma/client";
 
 const payload = telemetrySchema.parse({
@@ -157,6 +159,42 @@ if (learnedBaseline?.pattern !== "baseline" || (learnedBaseline.signalConfidence
 }
 if (learnedSpike?.pattern !== "spike_burst" || learnedSpike.anomalyScore <= 0.5) {
   throw new Error(`Expected bio spike burst anomaly, got ${JSON.stringify(learnedSpike)}`);
+}
+
+// ---- Détection multi-stimuli (arrosage + lumière + température) -------------
+const envBase = new Date("2026-06-01T08:00:00Z").getTime();
+const envMin = (m: number) => new Date(envBase + m * 60000);
+const envSeries = Array.from({ length: 49 }, (_, k) => {
+  const m = k * 5;
+  return {
+    recordedAt: envMin(m),
+    soilMoisturePct: m < 60 ? 20 : 40, // arrosage à t≈60
+    soilTempC: 18,
+    airTempC: m < 180 ? 22 : 16, // chute thermique à t≈180
+    airHumidityPct: 50,
+    lightLux: m < 120 ? 50 : 8000, // lever de lumière à t≈120
+    pressureHpa: 1010,
+  };
+});
+const envEvents = detectEnvironmentEvents(envSeries);
+const detectedTypes = new Set(envEvents.map((e) => e.type));
+if (!detectedTypes.has("watering") || !detectedTypes.has("light") || !detectedTypes.has("temp")) {
+  throw new Error(`Expected watering+light+temp stimuli, got ${[...detectedTypes].join(",")}`);
+}
+const wateringEv = envEvents.find((e) => e.type === "watering");
+if (!wateringEv || wateringEv.direction !== "up") {
+  throw new Error(`Expected upward watering step, got ${JSON.stringify(wateringEv)}`);
+}
+
+// ---- Couplage environnement ↔ activité bioélectrique -----------------------
+const bioForCoupling = Array.from({ length: 25 }, (_, k) => {
+  const m = k * 10;
+  const light = m < 120 ? 50 : 8000;
+  return { recordedAt: envMin(m + 15), activityIndex: Math.min(1, Math.log(light + 1) / 10) };
+});
+const coupling = computeCoupling(bioForCoupling, envSeries);
+if (coupling.dominant?.channel !== "lightLux" || coupling.dominant.correlation < 0.5) {
+  throw new Error(`Expected light to dominate coupling, got ${JSON.stringify(coupling.dominant)}`);
 }
 
 console.log("backend smoke ok");

@@ -55,6 +55,33 @@ type BioResponseRow = {
   confidence: number;
 };
 
+type CouplingChannel = {
+  channel: string;
+  label: string;
+  correlation: number;
+  lagMin: number;
+  confidence: number;
+};
+
+type CouplingPayload = {
+  dominant: CouplingChannel | null;
+  channels: CouplingChannel[];
+  text: string;
+} | null;
+
+const STIMULUS_LABELS: Record<string, string> = {
+  watering: "arrosage",
+  light: "lumière",
+  temp: "température",
+  humidity: "humidité de l'air",
+  pressure: "pression",
+  unknown: "stimulus",
+};
+
+function stimulusLabel(eventType: string): string {
+  return STIMULUS_LABELS[eventType] ?? eventType;
+}
+
 function parseWaveform(value: string | null | undefined): number[] {
   if (!value) return [];
   try {
@@ -161,6 +188,7 @@ function ActivityBars({ values }: { values: number[] }) {
 export function BioelectricPanel({ plantId, className }: { plantId: string; className?: string }) {
   const [readings, setReadings] = useState<BioReadingRow[]>([]);
   const [responses, setResponses] = useState<BioResponseRow[]>([]);
+  const [coupling, setCoupling] = useState<CouplingPayload>(null);
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
@@ -172,6 +200,7 @@ export function BioelectricPanel({ plantId, className }: { plantId: string; clas
       const data = await res.json();
       setReadings(Array.isArray(data.readings) ? data.readings : []);
       setResponses(Array.isArray(data.responses) ? data.responses : []);
+      setCoupling(data.coupling ?? null);
     } catch {
       /* réseau indisponible: on garde l'état précédent */
     } finally {
@@ -298,14 +327,67 @@ export function BioelectricPanel({ plantId, className }: { plantId: string; clas
             <ActivityBars values={series} />
           </div>
 
+          {coupling?.channels?.length ? (
+            <div style={{ marginBottom: 12 }}>
+              <span className="muted small" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <Activity size={13} /> Couplage environnement → signal
+              </span>
+              {coupling.dominant ? (
+                <p className="small" style={{ margin: "4px 0 6px" }}>
+                  Surtout corrélé à <strong>{coupling.dominant.label}</strong> (r=
+                  {coupling.dominant.correlation.toFixed(2)}
+                  {coupling.dominant.lagMin > 0 ? `, retard ~${coupling.dominant.lagMin} min` : ""})
+                </p>
+              ) : (
+                <p className="muted small" style={{ margin: "4px 0 6px" }}>
+                  Aucun couplage dominant fiable pour l&apos;instant.
+                </p>
+              )}
+              <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 4 }}>
+                {coupling.channels.slice(0, 4).map((c) => (
+                  <li key={c.channel} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span className="muted small" style={{ width: 130, flexShrink: 0 }}>
+                      {c.label}
+                    </span>
+                    <div
+                      style={{
+                        flex: 1,
+                        height: 6,
+                        borderRadius: 3,
+                        background: "rgba(120,120,120,0.12)",
+                        position: "relative",
+                        overflow: "hidden",
+                      }}
+                    >
+                      <div
+                        style={{
+                          position: "absolute",
+                          inset: 0,
+                          width: `${Math.min(100, Math.abs(c.correlation) * 100)}%`,
+                          background: c.correlation >= 0 ? ACCENT : "#c2603a",
+                          borderRadius: 3,
+                        }}
+                      />
+                    </div>
+                    <span className="muted small" style={{ width: 64, textAlign: "right", flexShrink: 0 }}>
+                      r={c.correlation.toFixed(2)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
           <div>
             <span className="muted small">Réactions détectées</span>
             {responses.length === 0 ? (
-              <p className="muted small">Aucune réaction à un arrosage corrélée pour l&apos;instant.</p>
+              <p className="muted small">Aucune réaction à un stimulus corrélée pour l&apos;instant.</p>
             ) : (
               <ul style={{ listStyle: "none", padding: 0, margin: "6px 0 0", display: "grid", gap: 6 }}>
                 {responses.slice(0, 6).map((r) => {
                   const pct = Math.round((r.responseRatio - 1) * 100);
+                  const sign = pct >= 0 ? `+${pct}` : `${pct}`;
+                  const label = stimulusLabel(r.eventType);
                   return (
                     <li
                       key={r.id}
@@ -325,7 +407,9 @@ export function BioelectricPanel({ plantId, className }: { plantId: string; clas
                       )}
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <strong style={{ fontSize: 13 }}>
-                          {r.reacted ? `Réaction à l'arrosage (+${pct}%)` : "Arrosage sans réaction nette"}
+                          {r.reacted
+                            ? `Réaction (${label}, ${sign}%)`
+                            : `${label.charAt(0).toUpperCase()}${label.slice(1)} sans réaction nette`}
                         </strong>
                         <div className="muted small">
                           {formatDate(r.eventAt)}
