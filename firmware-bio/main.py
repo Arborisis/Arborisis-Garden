@@ -35,6 +35,7 @@ class ArborisisBioPico:
         self.post_ok_count = 0
         self.post_fail_count = 0
         self.last_post = "never"
+        self.last_wifi_status = "not started"
         self.time_synced = False
         self.last_sync_ms = None
         self.last_sync_attempt_ms = None
@@ -176,6 +177,11 @@ class ArborisisBioPico:
         if battery_mv is not None:
             payload["batteryMv"] = battery_mv
 
+        max_energy = 1000000000
+        for key in ("bandLowEnergy", "bandMidEnergy", "bandHighEnergy"):
+            if payload.get(key) is not None and payload[key] > max_energy:
+                payload[key] = max_energy
+
         return {key: value for key, value in payload.items() if value is not None}
 
     # -- time ------------------------------------------------------------------
@@ -201,6 +207,8 @@ class ArborisisBioPico:
         try:
             import ntptime
             ntptime.host = config.NTP_HOST
+            if hasattr(ntptime, "timeout"):
+                ntptime.timeout = getattr(config, "NTP_TIMEOUT", 2)
             self.feed()
             ntptime.settime()
             self.time_synced = True
@@ -211,35 +219,72 @@ class ArborisisBioPico:
 
     # -- networking ------------------------------------------------------------
 
+    def wifi_status_text(self):
+        try:
+            code = self.wlan.status()
+        except Exception as exc:
+            return "status unavailable: {}".format(exc)
+        labels = {
+            getattr(network, "STAT_WRONG_PASSWORD", -3): "wrong password",
+            getattr(network, "STAT_NO_AP_FOUND", -2): "ssid not found",
+            getattr(network, "STAT_CONNECT_FAIL", -1): "connection failed",
+            getattr(network, "STAT_IDLE", 0): "idle",
+            getattr(network, "STAT_CONNECTING", 1): "connecting",
+            2: "connected, waiting for ip",
+            getattr(network, "STAT_GOT_IP", 3): "connected"
+        }
+        return "{} ({})".format(labels.get(code, "status"), code)
+
     def connect_wifi(self):
         ssid = self.settings.get("ssid", "")
         if not ssid:
+            self.last_wifi_status = "missing ssid"
             return False
         try:
             network.country(config.COUNTRY)
         except Exception:
             pass
-        self.wlan.active(True)
-        if not self.wlan.isconnected():
-            print("Connecting Wi-Fi:", ssid)
+        try:
+            ap = network.WLAN(network.AP_IF)
+            if ap.active():
+                ap.active(False)
+        except Exception:
+            pass
+        attempts = max(1, getattr(config, "WIFI_CONNECT_ATTEMPTS", 1))
+        for attempt in range(attempts):
+            if self.wlan.isconnected():
+                break
+            print("Connecting Wi-Fi:", ssid, "attempt", attempt + 1, "/", attempts)
             try:
+                try:
+                    self.wlan.disconnect()
+                except Exception:
+                    pass
+                self.wlan.active(True)
+                time.sleep_ms(300)
                 self.wlan.connect(ssid, self.settings.get("password", ""))
             except Exception as exc:
                 print("Wi-Fi connect error:", exc)
+                self.last_wifi_status = "connect error: {}".format(exc)
             deadline = time.ticks_add(time.ticks_ms(), config.WIFI_CONNECT_TIMEOUT * 1000)
             while time.ticks_diff(deadline, time.ticks_ms()) > 0 and not self.wlan.isconnected():
+                self.last_wifi_status = self.wifi_status_text()
                 self.feed()
                 self.led_set(True)
                 time.sleep_ms(250)
                 self.led_set(False)
                 time.sleep_ms(250)
+            if not self.wlan.isconnected():
+                self.last_wifi_status = self.wifi_status_text()
+                print("Wi-Fi attempt failed -", self.last_wifi_status)
         connected = self.wlan.isconnected()
         if connected:
             print("Wi-Fi:", self.wlan.ifconfig())
+            self.last_wifi_status = "connected"
             self.wifi_backoff = config.WIFI_BACKOFF_START
-            self.sync_time()
         else:
-            print("Wi-Fi: offline")
+            self.last_wifi_status = self.wifi_status_text()
+            print("Wi-Fi: offline -", self.last_wifi_status)
         return connected
 
     def ensure_wifi(self):
@@ -329,6 +374,7 @@ class ArborisisBioPico:
         except OSError:
             return
         try:
+            client.settimeout(1.0)
             request = client.recv(2048).decode()
             path = request.split(" ", 2)[1] if request else "/"
             if path.startswith("/api/readings"):
@@ -353,6 +399,7 @@ class ArborisisBioPico:
             "freeMem": gc.mem_free(),
             "timeSynced": self.time_synced,
             "wifiConnected": self.wlan.isconnected(),
+            "wifiStatus": self.last_wifi_status,
             "queued": len(self.queue),
             "dropped": self.dropped_count,
             "postOk": self.post_ok_count,
@@ -532,17 +579,25 @@ POST ok {ok}/ko {ko} &middot; dernier {last} &middot; RAM {mem} o &middot; horlo
 
     def url_decode(self, value):
         value = value.replace("+", " ")
-        parts = value.split("%")
-        decoded = parts[0]
-        for part in parts[1:]:
-            if len(part) >= 2:
+        decoded = bytearray()
+        i = 0
+        while i < len(value):
+            if value[i] == "%" and i + 2 < len(value):
                 try:
-                    decoded += chr(int(part[:2], 16)) + part[2:]
+                    decoded.append(int(value[i + 1:i + 3], 16))
+                    i += 3
                     continue
                 except Exception:
                     pass
-            decoded += "%" + part
-        return decoded
+            try:
+                decoded.extend(value[i].encode("utf-8"))
+            except Exception:
+                decoded.append(ord(value[i]) & 0xff)
+            i += 1
+        try:
+            return decoded.decode("utf-8")
+        except Exception:
+            return "".join(chr(byte) for byte in decoded)
 
     def parse_form(self, body):
         updated = {}
@@ -581,11 +636,13 @@ POST ok {ok}/ko {ko} &middot; dernier {last} &middot; RAM {mem} o &middot; horlo
         self.log_boot()
         if not self.connect_wifi():
             self.setup_ap()  # blocks until provisioned, then resets.
-        try:
-            self.wdt = WDT(timeout=config.WATCHDOG_MS)
-        except Exception as exc:
-            print("Watchdog unavailable:", exc)
+        if getattr(config, "WATCHDOG_MS", 0) > 0:
+            try:
+                self.wdt = WDT(timeout=config.WATCHDOG_MS)
+            except Exception as exc:
+                print("Watchdog unavailable:", exc)
         self.start_web_server()
+        self.sync_time()
         while True:
             try:
                 self.feed()

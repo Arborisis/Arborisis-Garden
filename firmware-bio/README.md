@@ -77,6 +77,19 @@ Tu peux brancher les électrodes **directement** sur l'entrée analogique, sans
    - **Gain** du front-end (`bio_gain`, `0` = inconnu), `bio_uv_per_count`
      (≈ 50,35 µV/compte à gain 1), et offset DC (`bio_bias_raw`, `0` = baseline auto).
 
+## Dépannage Wi-Fi
+- Le Pico W/WH se connecte uniquement aux réseaux **2,4 GHz**. Si ton routeur
+  sépare 2,4 GHz et 5 GHz, choisis le SSID 2,4 GHz.
+- Si tu ne vois pas `ArborisisBio-*`, redémarre le Pico sans fichier
+  `arborisis_bio_config.json` ou avec `"ssid": ""` dans ce fichier.
+- Pour configurer : connecte ton téléphone/ordinateur au Wi-Fi `ArborisisBio-*`
+  avec le mot de passe `arborisis`, puis ouvre `http://192.168.4.1`.
+- Si la connexion échoue après sauvegarde, ouvre la console série du Pico :
+  le firmware affiche maintenant `wrong password`, `ssid not found` ou
+  `connection failed` quand MicroPython fournit ce statut.
+- Les SSID/mots de passe avec accents ou caractères UTF-8 sont acceptés par le
+  formulaire de setup.
+
 ## Ce que le Pico calcule et envoie (par fenêtre)
 `biosignal.analyze()` produit, sans FFT : `rmsRaw`, `stdRaw`, `p2pRaw`,
 `min/maxRaw`, `slopeRawPerSec` (dérive), `zeroCrossRate`, `spikeCount`

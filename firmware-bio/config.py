@@ -61,13 +61,15 @@ BATTERY_SAMPLES = 5
 STATUS_LED_PIN = "LED"
 
 # Reliability tuning (memes valeurs que le firmware environnemental).
-WATCHDOG_MS = 8000            # RP2040 hardware watchdog ceiling is ~8.3 s.
+WATCHDOG_MS = 0               # 0 = disabled; network DNS/HTTPS can exceed RP2040 WDT ceiling.
 WIFI_CONNECT_TIMEOUT = 18
+WIFI_CONNECT_ATTEMPTS = 3
 WIFI_BACKOFF_START = 5
 WIFI_BACKOFF_MAX = 300
 OFFLINE_BUFFER_MAX = 60
 HTTP_TIMEOUT = 6              # < WATCHDOG_MS: un POST bloque est buffer puis reessaye.
 NTP_HOST = "pool.ntp.org"
+NTP_TIMEOUT = 2
 NTP_RESYNC_SECONDS = 21600
 NTP_RETRY_SECONDS = 600
 
