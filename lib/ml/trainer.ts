@@ -13,10 +13,15 @@ export type TrainingResult = {
   adopted: boolean
 }
 
-const HIDDEN_DIM = 6
 const RESIDUAL_RANGE = 25
 const PATIENCE = 80
 const WARMUP = 60 // don't early-stop before the residual has had time to move
+
+// Recency weighting: recent labels matter more (plants drift with the season),
+// so each sample is weighted by an exponential half-life on its age. The CV gate
+// and early-stopping RMSE stay UNWEIGHTED, so this only shapes the fit — it can
+// never sneak a worse-generalizing model past the non-regression guarantee.
+const RECENCY_HALF_LIFE_DAYS = 45
 
 // Adoption gate (k-fold cross-validated): only replace the safe prior when the
 // trained model generalizes better by both a relative and an absolute margin.
@@ -45,18 +50,26 @@ function effectiveL2(paramCount: number, nTrain: number): number {
 // Capacity grows with data so we never fit a head we can't cross-validate.
 const MIN_VALIDATABLE = 16 // below this we keep the prior untouched
 function chooseKind(n: number): ResidualHead["kind"] {
-  if (n < 30) return "none"    // only learn the 4-param expert mixture
+  if (n < 30) return "none"    // only learn the 5-param expert mixture
   if (n < 100) return "linear" // ridge-regularized linear correction
   return "mlp"
 }
 
-function paramCountFor(kind: ResidualHead["kind"]): number {
+// MLP width also grows with data: a wider hidden layer captures richer
+// non-linear interactions once we have enough samples to cross-validate it.
+function chooseHidden(n: number): number {
+  if (n < 250) return 6
+  if (n < 600) return 10
+  return 16
+}
+
+function paramCountFor(kind: ResidualHead["kind"], hidden: number): number {
   if (kind === "linear") return INPUT_DIM + 1
-  if (kind === "mlp") return HIDDEN_DIM * INPUT_DIM + HIDDEN_DIM + HIDDEN_DIM + 1
+  if (kind === "mlp") return hidden * INPUT_DIM + hidden + hidden + 1
   return 0
 }
 
-type Prepared = { scores: ExpertScores; vector: number[]; label: number }
+type Prepared = { scores: ExpertScores; vector: number[]; label: number; weight: number }
 
 /** Adam optimizer over a flat parameter array. */
 class Adam {
@@ -123,11 +136,16 @@ function fitModel(
   fitSet: Prepared[],
   valSet: Prepared[],
   kind: ResidualHead["kind"],
+  hidden: number,
   init: ModelWeights,
   maxEpochs: number
 ): { weights: ModelWeights; valRmse: number; epochs: number } {
   const norm: NormStats = kind === "none" ? { mean: [], std: [] } : fitNorm(fitSet.map(p => p.vector))
-  const l2 = effectiveL2(paramCountFor(kind), fitSet.length)
+  const l2 = effectiveL2(paramCountFor(kind, hidden), fitSet.length)
+  const HIDDEN_DIM = hidden
+  // Sum of recency weights → normalizer for the weighted gradient (so the overall
+  // step size stays comparable to the unweighted mean regardless of the weights).
+  const wsum = fitSet.reduce((a, p) => a + p.weight, 0) || 1
 
   const logits = [init.experts.sensor, init.experts.visual, init.experts.weather, init.experts.llm, init.experts.bio]
   const logitAdam = new Adam(5)
@@ -182,7 +200,6 @@ function fitModel(
     let gb2 = 0
 
     const mix = softmaxExperts({ sensor: logits[0], visual: logits[1], weather: logits[2], llm: logits[3], bio: logits[4] })
-    const m = fitSet.length
 
     for (const p of fitSet) {
       const blend =
@@ -218,7 +235,7 @@ function fitModel(
       const raw = blend + residual
       const pred = Math.max(0, Math.min(100, raw))
       const saturated = (raw <= 0 && pred === 0) || (raw >= 100 && pred === 100)
-      const dPred = saturated ? 0 : (pred - p.label) / m
+      const dPred = saturated ? 0 : (p.weight * (pred - p.label)) / wsum
 
       const scoresArr = [p.scores.sensor, p.scores.visual, p.scores.weather, p.scores.llm, p.scores.bio]
       const mixArr = [mix.sensor, mix.visual, mix.weather, mix.llm, mix.bio]
@@ -301,13 +318,24 @@ export function trainWeights(
     return { weights: init, rmse: 0, mae: 0, valRmse: 0, sampleCount: 0, epochs: 0, residualKind: "none", adopted: false }
   }
 
-  const prepared: Prepared[] = samples.map(s => {
+  // Exponential recency weights (newest sample = 1).
+  const times = samples.map(s => new Date(s.sampledAt).getTime())
+  const newest = times.length ? Math.max(...times) : Date.now()
+  const halfLifeMs = RECENCY_HALF_LIFE_DAYS * 86_400_000
+  const prepared: Prepared[] = samples.map((s, i) => {
     const scores = expertScores(s.features)
-    return { scores, vector: toVector(s.features, scores), label: s.label }
+    const age = Math.max(0, newest - times[i])
+    return {
+      scores,
+      vector: toVector(s.features, scores),
+      label: s.label,
+      weight: Math.pow(0.5, age / halfLifeMs)
+    }
   })
 
   const n = prepared.length
   const kind = chooseKind(n)
+  const hidden = chooseHidden(n)
 
   const priorMetrics = () => rmseMae(prepared, p => evalHealthW(p, init))
 
@@ -333,7 +361,7 @@ export function trainWeights(
     // inner holdout from rest for early stopping
     const innerVal = rest.slice(0, Math.max(2, Math.round(rest.length * 0.2)))
     const innerTrain = rest.slice(innerVal.length)
-    const { weights } = fitModel(innerTrain.length ? innerTrain : rest, innerVal, kind, init, maxEpochs)
+    const { weights } = fitModel(innerTrain.length ? innerTrain : rest, innerVal, kind, hidden, init, maxEpochs)
     for (const p of fold) {
       cvTrainedSe += (p.label - evalHealthW(p, weights)) ** 2
       cvPriorSe += (p.label - evalHealthW(p, init)) ** 2
@@ -355,7 +383,7 @@ export function trainWeights(
   // ---- Adopted: final fit on all data with an internal early-stopping holdout ----
   const finalVal = shuffledSet.slice(0, Math.max(4, Math.round(n * 0.2)))
   const finalTrain = shuffledSet.slice(finalVal.length)
-  const { weights, epochs } = fitModel(finalTrain, finalVal, kind, init, maxEpochs)
+  const { weights, epochs } = fitModel(finalTrain, finalVal, kind, hidden, init, maxEpochs)
   const train = rmseMae(prepared, p => evalHealthW(p, weights))
 
   return {
