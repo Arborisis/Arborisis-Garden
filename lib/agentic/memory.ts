@@ -1,6 +1,7 @@
 import type { PrismaClient, Memory, ChatMessage, Plant } from "@prisma/client";
 import type { AgentMemoryUpdate } from "./types";
 import { callOpenRouter } from "./llm";
+import { resolveCompactModel } from "../llm-models";
 
 // Tours de conversation gardes verbatim avant compaction.
 export const CONVERSATION_KEEP_WINDOW = 12;
@@ -90,7 +91,7 @@ export async function compactConversation(
   try {
     const result = await callOpenRouter(
       [{ role: "user", content: prompt }],
-      { temperature: 0.2 }
+      { temperature: 0.2, model: resolveCompactModel(), reasoning: false }
     );
     summary = result.content.trim();
   } catch {

@@ -1,5 +1,6 @@
 import type { ColorAnomalyReport } from "./ml/colorAnomaly";
 import type { DiseaseReport } from "./ml/diseaseClassifier";
+import { resolveAgentModel, resolveVisionModel, samplingParams, reasoningParams } from "./llm-models";
 
 type ChatMessage = {
   role: "system" | "user" | "assistant";
@@ -224,9 +225,9 @@ export async function streamOpenRouter(messages: ChatMessage[]) {
       "X-Title": process.env.OPENROUTER_APP_NAME ?? "Arborisis Garden"
     },
     body: JSON.stringify({
-      model: process.env.OPENROUTER_MODEL ?? "anthropic/claude-3.5-sonnet",
+      model: resolveAgentModel(),
       stream: true,
-      temperature: 0.45,
+      ...samplingParams(resolveAgentModel(), 0.45),
       messages
     })
   });
@@ -329,10 +330,11 @@ export async function analyzePlantPhotoWithOpenRouter(input: {
       "X-Title": process.env.OPENROUTER_APP_NAME ?? "Arborisis Garden"
     },
     body: JSON.stringify({
-      model: process.env.OPENROUTER_VISION_MODEL ?? process.env.OPENROUTER_MODEL ?? "anthropic/claude-3.5-sonnet",
+      model: resolveVisionModel(),
       stream: false,
-      temperature: 0.2,
-      max_tokens: 1200,
+      ...samplingParams(resolveVisionModel(), 0.2),
+      ...reasoningParams(),
+      max_tokens: 1600,
       messages: [
         {
           role: "system",

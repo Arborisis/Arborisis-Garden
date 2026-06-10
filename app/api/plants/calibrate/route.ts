@@ -7,6 +7,7 @@ import {
   parseProfileCalibration,
   type PlantProfileCalibration
 } from "@/lib/calibration";
+import { resolveAgentModel, samplingParams, reasoningParams } from "@/lib/llm-models";
 
 export const runtime = "nodejs";
 
@@ -69,9 +70,10 @@ async function researchPlantProfile(prompt: string): Promise<PlantProfileCalibra
       "X-Title": process.env.OPENROUTER_APP_NAME ?? "Arborisis Garden"
     },
     body: JSON.stringify({
-      model: process.env.OPENROUTER_MODEL ?? "anthropic/claude-3.5-sonnet",
+      model: resolveAgentModel(),
       stream: false,
-      temperature: 0.15,
+      ...samplingParams(resolveAgentModel(), 0.15),
+      ...reasoningParams(),
       max_tokens: 2200,
       tools: [buildOpenRouterWebTool()],
       messages: [

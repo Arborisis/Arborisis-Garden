@@ -29,6 +29,17 @@ const ADOPT_MARGIN = 0.985
 const ADOPT_ABS = 0.3
 const KFOLDS = 5
 
+// Huber loss: the error gradient is clamped at ±HUBER_DELTA health points so a
+// few noisy human labels can't dominate the fit. All eval metrics and the CV
+// adoption gate stay on RMSE, so adoption still requires a genuine
+// generalization win over the squared-loss prior.
+const HUBER_DELTA = 10
+
+// Random-init variance reduction: train several MLP restarts and keep the best
+// by validation RMSE. Linear/none heads start at zero (deterministic), so a
+// single fit suffices for them.
+const MLP_RESTARTS = 3
+
 // Adam hyperparameters
 const LR = 0.03
 const BETA1 = 0.9
@@ -235,7 +246,8 @@ function fitModel(
       const raw = blend + residual
       const pred = Math.max(0, Math.min(100, raw))
       const saturated = (raw <= 0 && pred === 0) || (raw >= 100 && pred === 100)
-      const dPred = saturated ? 0 : (p.weight * (pred - p.label)) / wsum
+      const err = Math.max(-HUBER_DELTA, Math.min(HUBER_DELTA, pred - p.label))
+      const dPred = saturated ? 0 : (p.weight * err) / wsum
 
       const scoresArr = [p.scores.sensor, p.scores.visual, p.scores.weather, p.scores.llm, p.scores.bio]
       const mixArr = [mix.sensor, mix.visual, mix.weather, mix.llm, mix.bio]
@@ -308,6 +320,27 @@ function fitModel(
   return { weights: bestWeights, valRmse: bestValRmse, epochs: ranEpochs }
 }
 
+/**
+ * Fit with random restarts (MLP only) and keep the best-by-validation model,
+ * reducing the variance introduced by the Xavier random init.
+ */
+function fitModelBest(
+  fitSet: Prepared[],
+  valSet: Prepared[],
+  kind: ResidualHead["kind"],
+  hidden: number,
+  init: ModelWeights,
+  maxEpochs: number
+): { weights: ModelWeights; valRmse: number; epochs: number } {
+  const restarts = kind === "mlp" ? MLP_RESTARTS : 1
+  let best = fitModel(fitSet, valSet, kind, hidden, init, maxEpochs)
+  for (let r = 1; r < restarts; r++) {
+    const candidate = fitModel(fitSet, valSet, kind, hidden, init, maxEpochs)
+    if (candidate.valRmse < best.valRmse) best = candidate
+  }
+  return best
+}
+
 export function trainWeights(
   initial: ModelWeights | unknown,
   samples: TrainingSample[],
@@ -361,7 +394,7 @@ export function trainWeights(
     // inner holdout from rest for early stopping
     const innerVal = rest.slice(0, Math.max(2, Math.round(rest.length * 0.2)))
     const innerTrain = rest.slice(innerVal.length)
-    const { weights } = fitModel(innerTrain.length ? innerTrain : rest, innerVal, kind, hidden, init, maxEpochs)
+    const { weights } = fitModelBest(innerTrain.length ? innerTrain : rest, innerVal, kind, hidden, init, maxEpochs)
     for (const p of fold) {
       cvTrainedSe += (p.label - evalHealthW(p, weights)) ** 2
       cvPriorSe += (p.label - evalHealthW(p, init)) ** 2
@@ -383,7 +416,7 @@ export function trainWeights(
   // ---- Adopted: final fit on all data with an internal early-stopping holdout ----
   const finalVal = shuffledSet.slice(0, Math.max(4, Math.round(n * 0.2)))
   const finalTrain = shuffledSet.slice(finalVal.length)
-  const { weights, epochs } = fitModel(finalTrain, finalVal, kind, hidden, init, maxEpochs)
+  const { weights, epochs } = fitModelBest(finalTrain, finalVal, kind, hidden, init, maxEpochs)
   const train = rmseMae(prepared, p => evalHealthW(p, weights))
 
   return {
