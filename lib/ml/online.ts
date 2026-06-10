@@ -194,6 +194,8 @@ export function onlineUpdate(
   const range = start.residual.range
   const trainResidual = (kind === "linear" || kind === "mlp") && dim > 0
 
+  // Le fine-tune en ligne est gardé non-régressif, donc la provenance (meta)
+  // du dernier entraînement batch reste un proxy valable pour la confiance.
   const buildWeights = (): ModelWeights => ({
     version: 2,
     experts: { sensor: logits[0], visual: logits[1], weather: logits[2], llm: logits[3], bio: logits[4] },
@@ -202,7 +204,8 @@ export function onlineUpdate(
         ? { kind, norm, range, w: [...linW], b: linB }
         : kind === "mlp"
         ? { kind, norm, range, W1: W1.map(r => [...r]), b1: [...b1], W2: [...W2], b2 }
-        : { kind: "none", norm: start.residual.norm, range }
+        : { kind: "none", norm: start.residual.norm, range },
+    ...(start.meta ? { meta: start.meta } : {})
   })
 
   const wsum = prepared.reduce((a, p) => a + p.weight, 0) || 1

@@ -1,4 +1,4 @@
-import type { MLFeatures, ModelWeights, ExpertLogits, LegacyWeights } from "./types"
+import type { MLFeatures, ModelWeights, ExpertLogits, LegacyWeights, TrainMeta } from "./types"
 import { DEFAULT_WEIGHTS } from "./types"
 import {
   computeSensorScore,
@@ -145,6 +145,17 @@ function normalizeExperts(raw: unknown): ExpertLogits {
   }
 }
 
+function normalizeMeta(raw: unknown): TrainMeta | undefined {
+  if (!raw || typeof raw !== "object") return undefined
+  const m = raw as Partial<TrainMeta>
+  if (typeof m.valRmse !== "number" || !Number.isFinite(m.valRmse)) return undefined
+  return {
+    valRmse: m.valRmse,
+    sampleCount: typeof m.sampleCount === "number" ? m.sampleCount : 0,
+    trainedAt: typeof m.trainedAt === "string" ? m.trainedAt : ""
+  }
+}
+
 export function migrateWeights(raw: unknown): ModelWeights {
   if (!raw || typeof raw !== "object") return DEFAULT_WEIGHTS
   const obj = raw as Record<string, unknown>
@@ -152,6 +163,7 @@ export function migrateWeights(raw: unknown): ModelWeights {
   if (obj.version === 2 && obj.experts && obj.residual) {
     const r = obj.residual as ModelWeights["residual"]
     const kind = r.kind ?? "none"
+    const meta = normalizeMeta(obj.meta)
     // Garde-fou: si la tete residuelle a ete entrainee sur un nombre de features
     // different (ex: ajout de l'expert bio), ses poids ne sont plus alignes.
     // On retombe sur le melange d'experts (sur) jusqu'au prochain entrainement.
@@ -177,7 +189,8 @@ export function migrateWeights(raw: unknown): ModelWeights {
         b1: r.b1,
         W2: r.W2,
         b2: r.b2
-      }
+      },
+      ...(meta ? { meta } : {})
     }
   }
 

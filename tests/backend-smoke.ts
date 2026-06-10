@@ -291,6 +291,19 @@ const priorRmse = (() => {
 if (trained.adopted && trained.valRmse > priorRmse + 1e-6) {
   throw new Error(`Adopted model worse than prior CV: ${trained.valRmse} > ${priorRmse}`);
 }
+// Provenance: un modèle adopté embarque sa RMSE out-of-fold (calibration de confiance).
+if (trained.adopted && (!trained.weights.meta || !Number.isFinite(trained.weights.meta.valRmse))) {
+  throw new Error("Un modèle adopté doit embarquer meta.valRmse");
+}
+// Déterminisme: même dataset → même modèle (PRNG seedé, pas de Math.random).
+const retrained = trainWeights(DEFAULT_WEIGHTS, mlSamples, 300);
+if (
+  retrained.valRmse !== trained.valRmse ||
+  retrained.residualKind !== trained.residualKind ||
+  JSON.stringify(retrained.weights.experts) !== JSON.stringify(trained.weights.experts)
+) {
+  throw new Error("trainWeights non déterministe pour un dataset identique");
+}
 
 // Online learner must never degrade the recent buffer (it self-rolls-back).
 const online = onlineUpdate(trained.weights, mlSamples.slice(-60));
