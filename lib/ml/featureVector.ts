@@ -102,14 +102,18 @@ export function fitNorm(vectors: number[][]): NormStats {
   }
   for (let j = 0; j < INPUT_DIM; j++) mean[j] /= n
 
+  const sq = new Array(INPUT_DIM).fill(0)
   for (const v of vectors) {
     for (let j = 0; j < INPUT_DIM; j++) {
       const d = v[j] - mean[j]
-      std[j] += d * d
+      sq[j] += d * d
     }
   }
+  // Floor at 0.05: features live on a 0-1 scale, so a quasi-constant feature in
+  // the training set can't explode to >20 std units on a slightly different
+  // value at predict time (tanh saturation of the residual head).
   for (let j = 0; j < INPUT_DIM; j++) {
-    std[j] = Math.max(Math.sqrt(std[j] / n), 1e-3)
+    std[j] = Math.max(Math.sqrt(sq[j] / n), 0.05)
   }
   return { mean, std }
 }

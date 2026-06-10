@@ -36,7 +36,16 @@ export function predict(
   )
   const modelMaturity =
     weights.residual.kind === "mlp" ? 1 : weights.residual.kind === "linear" ? 0.85 : 0.7
-  const confidenceScore = Math.round(dataConfidence * modelMaturity * 100) / 100
+  // Calibration: si les poids embarquent leur RMSE out-of-fold (meta), la
+  // confiance reflète l'erreur de généralisation réellement mesurée. Sans meta
+  // (modèle par défaut / ancien), le facteur vaut 1 → comportement inchangé.
+  const valRmse = weights.meta?.valRmse
+  const errorFactor =
+    typeof valRmse === "number" && Number.isFinite(valRmse)
+      ? Math.max(0, Math.min(1, 1 - valRmse / 50))
+      : 1
+  const confidenceScore =
+    Math.round(dataConfidence * modelMaturity * (0.7 + 0.3 * errorFactor) * 100) / 100
 
   const stressLevel =
     healthScore >= 75 ? 'healthy'
@@ -44,14 +53,21 @@ export function predict(
     : healthScore >= 35 ? 'moderate_stress'
     : 'critical'
 
-  // Watering urgency prediction via linear extrapolation
+  // Watering urgency: soil dries roughly exponentially toward a residual floor
+  // (evaporation slows as the soil empties), so we extrapolate
+  // M(t) = floor + (M0 − floor)·e^(−kt) with k fitted from the current slope.
+  // Linear extrapolation systematically under-estimates the remaining time.
   let wateringUrgencyHours: number | null = null
   const { currentMoisturePct, targetMoisturePct, moistureSlopePctPerHour } = features
   const criticalThreshold = Math.max(targetMoisturePct * 0.5, 20)
+  const DRY_FLOOR_PCT = 5
   if (currentMoisturePct <= criticalThreshold) {
     wateringUrgencyHours = 0
   } else if (moistureSlopePctPerHour < -0.3) {
-    const hours = (currentMoisturePct - criticalThreshold) / Math.abs(moistureSlopePctPerHour)
+    const above = Math.max(currentMoisturePct - DRY_FLOOR_PCT, 1)
+    const thresholdAbove = Math.max(criticalThreshold - DRY_FLOOR_PCT, 1)
+    const k = Math.abs(moistureSlopePctPerHour) / above
+    const hours = Math.log(above / thresholdAbove) / k
     if (hours > 0 && hours <= 72) {
       wateringUrgencyHours = Math.round(hours)
     }

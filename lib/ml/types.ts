@@ -105,10 +105,22 @@ export type ResidualHead = {
   b2?: number
 }
 
+/**
+ * Provenance d'entraînement embarquée dans les poids: permet à predict() de
+ * calibrer la confiance sur l'erreur de généralisation réellement mesurée
+ * (RMSE out-of-fold) plutôt que sur la seule capacité du modèle.
+ */
+export type TrainMeta = {
+  valRmse: number
+  sampleCount: number
+  trainedAt: string
+}
+
 export type ModelWeights = {
   version: 2
   experts: ExpertLogits
   residual: ResidualHead
+  meta?: TrainMeta
 }
 
 /** Logits chosen so softmax ≈ the historical default blend, plus a small bio share. */

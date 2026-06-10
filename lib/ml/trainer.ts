@@ -37,14 +37,23 @@ const HUBER_DELTA = 10
 
 // Random-init variance reduction: train several MLP restarts and keep the best
 // by validation RMSE. Linear/none heads start at zero (deterministic), so a
-// single fit suffices for them.
-const MLP_RESTARTS = 3
+// single fit suffices for them. CV uses fewer restarts than the final fit to
+// keep the candidate sweep affordable.
+const MLP_RESTARTS_CV = 2
+const MLP_RESTARTS_FINAL = 3
 
-// Adam hyperparameters
+// Adam hyperparameters. LR is the cosine-schedule peak: it decays to LR_FLOOR×LR
+// over maxEpochs, which lets early epochs move fast and late epochs settle.
 const LR = 0.03
+const LR_FLOOR = 0.05
 const BETA1 = 0.9
 const BETA2 = 0.999
 const EPS = 1e-8
+
+// Gaussian jitter on the residual head's standardized inputs during training
+// only (eval/early-stop stay clean). On small tabular datasets this acts like a
+// smoothness prior: the head can't pin predictions on razor-thin feature splits.
+const INPUT_NOISE = 0.05
 
 // Ridge-style L2: scaled by params/samples so the residual is strongly shrunk
 // when data is scarce relative to its capacity, and lightly when data is rich.
@@ -58,12 +67,17 @@ function effectiveL2(paramCount: number, nTrain: number): number {
   return Math.max(L2_MIN, Math.min(L2_MAX, L2_BASE * ratio))
 }
 
-// Capacity grows with data so we never fit a head we can't cross-validate.
+// Capacity is *selected by cross-validation*, not by hard sample-count rules:
+// every affordable candidate below competes in the k-fold loop and the best
+// out-of-fold RMSE wins. The thresholds only bound which candidates are worth
+// paying for (an MLP on 30 samples can't be validated meaningfully anyway).
 const MIN_VALIDATABLE = 16 // below this we keep the prior untouched
-function chooseKind(n: number): ResidualHead["kind"] {
-  if (n < 30) return "none"    // only learn the 5-param expert mixture
-  if (n < 100) return "linear" // ridge-regularized linear correction
-  return "mlp"
+type Capacity = { kind: ResidualHead["kind"]; hidden: number }
+function candidateCapacities(n: number): Capacity[] {
+  const candidates: Capacity[] = [{ kind: "none", hidden: 0 }]
+  if (n >= 24) candidates.push({ kind: "linear", hidden: 0 })
+  if (n >= 80) candidates.push({ kind: "mlp", hidden: chooseHidden(n) })
+  return candidates
 }
 
 // MLP width also grows with data: a wider hidden layer captures richer
@@ -82,6 +96,32 @@ function paramCountFor(kind: ResidualHead["kind"], hidden: number): number {
 
 type Prepared = { scores: ExpertScores; vector: number[]; label: number; weight: number }
 
+// Deterministic PRNG (mulberry32): training is reproducible for a given dataset,
+// restarts differ only by their seed. No reliance on global Math.random.
+type Rng = () => number
+function mulberry32(seed: number): Rng {
+  let a = seed >>> 0
+  return () => {
+    a = (a + 0x6d2b79f5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+/** Standard normal via Box-Muller. */
+function gaussian(rng: Rng): number {
+  const u = Math.max(rng(), 1e-12)
+  const v = rng()
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v)
+}
+
+/** Cosine learning-rate schedule from LR down to LR_FLOOR×LR. */
+function lrAt(epoch: number, maxEpochs: number): number {
+  const t = Math.min(1, epoch / Math.max(maxEpochs - 1, 1))
+  return LR * (LR_FLOOR + (1 - LR_FLOOR) * 0.5 * (1 + Math.cos(Math.PI * t)))
+}
+
 /** Adam optimizer over a flat parameter array. */
 class Adam {
   m: number[]
@@ -91,7 +131,7 @@ class Adam {
     this.m = new Array(size).fill(0)
     this.v = new Array(size).fill(0)
   }
-  step(params: number[], grads: number[]) {
+  step(params: number[], grads: number[], lr: number) {
     this.t++
     const bc1 = 1 - Math.pow(BETA1, this.t)
     const bc2 = 1 - Math.pow(BETA2, this.t)
@@ -100,7 +140,7 @@ class Adam {
       this.v[i] = BETA2 * this.v[i] + (1 - BETA2) * grads[i] * grads[i]
       const mHat = this.m[i] / bc1
       const vHat = this.v[i] / bc2
-      params[i] -= (LR * mHat) / (Math.sqrt(vHat) + EPS)
+      params[i] -= (lr * mHat) / (Math.sqrt(vHat) + EPS)
     }
   }
 }
@@ -129,10 +169,10 @@ function rmseMae(set: Prepared[], evalFn: (p: Prepared) => number) {
   return { rmse: Math.sqrt(se / n), mae: ae / n }
 }
 
-function shuffled<T>(arr: T[]): T[] {
+function shuffled<T>(arr: T[], rng: Rng): T[] {
   const a = [...arr]
   for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
+    const j = Math.floor(rng() * (i + 1))
     ;[a[i], a[j]] = [a[j], a[i]]
   }
   return a
@@ -149,7 +189,8 @@ function fitModel(
   kind: ResidualHead["kind"],
   hidden: number,
   init: ModelWeights,
-  maxEpochs: number
+  maxEpochs: number,
+  rng: Rng
 ): { weights: ModelWeights; valRmse: number; epochs: number } {
   const norm: NormStats = kind === "none" ? { mean: [], std: [] } : fitNorm(fitSet.map(p => p.vector))
   const l2 = effectiveL2(paramCountFor(kind, hidden), fitSet.length)
@@ -172,7 +213,7 @@ function fitModel(
   } else if (kind === "mlp") {
     const xavier = Math.sqrt(1 / INPUT_DIM)
     W1 = Array.from({ length: HIDDEN_DIM }, () =>
-      Array.from({ length: INPUT_DIM }, () => (Math.random() * 2 - 1) * xavier)
+      Array.from({ length: INPUT_DIM }, () => (rng() * 2 - 1) * xavier)
     )
     b1 = new Array(HIDDEN_DIM).fill(0)
     W2 = new Array(HIDDEN_DIM).fill(0) // start at 0 → residual 0 → expert prior
@@ -220,7 +261,11 @@ function fitModel(
         p.scores.llm * mix.llm +
         p.scores.bio * mix.bio
 
-      const x = kind === "none" ? p.vector : standardize(p.vector, norm)
+      let x = kind === "none" ? p.vector : standardize(p.vector, norm)
+      // Train-time-only input jitter (the early-stopping eval uses clean inputs).
+      if (kind !== "none" && INPUT_NOISE > 0) {
+        x = x.map(v => v + INPUT_NOISE * gaussian(rng))
+      }
 
       let residual = 0
       let aOut = 0, h: number[] = []
@@ -281,12 +326,13 @@ function fitModel(
       }
     }
 
-    // Adam updates
-    logitAdam.step(logits, gLogits)
+    // Adam updates (cosine-annealed learning rate)
+    const lr = lrAt(epoch, maxEpochs)
+    logitAdam.step(logits, gLogits, lr)
     if (kind === "linear" && linAdam) {
       const params = [...linW, linB]
       const grads = [...gLinW, gLinB]
-      linAdam.step(params, grads)
+      linAdam.step(params, grads, lr)
       linW = params.slice(0, INPUT_DIM)
       linB = params[INPUT_DIM]
     } else if (kind === "mlp" && mlpAdam) {
@@ -296,7 +342,7 @@ function fitModel(
       for (let i = 0; i < HIDDEN_DIM; i++) { params.push(b1[i]); grads.push(gb1[i]) }
       for (let i = 0; i < HIDDEN_DIM; i++) { params.push(W2[i]); grads.push(gW2[i]) }
       params.push(b2); grads.push(gb2)
-      mlpAdam.step(params, grads)
+      mlpAdam.step(params, grads, lr)
       let ptr = 0
       for (let i = 0; i < HIDDEN_DIM; i++) for (let j = 0; j < INPUT_DIM; j++) W1[i][j] = params[ptr++]
       for (let i = 0; i < HIDDEN_DIM; i++) b1[i] = params[ptr++]
@@ -330,12 +376,14 @@ function fitModelBest(
   kind: ResidualHead["kind"],
   hidden: number,
   init: ModelWeights,
-  maxEpochs: number
+  maxEpochs: number,
+  seed: number,
+  maxRestarts: number
 ): { weights: ModelWeights; valRmse: number; epochs: number } {
-  const restarts = kind === "mlp" ? MLP_RESTARTS : 1
-  let best = fitModel(fitSet, valSet, kind, hidden, init, maxEpochs)
+  const restarts = kind === "mlp" ? maxRestarts : 1
+  let best = fitModel(fitSet, valSet, kind, hidden, init, maxEpochs, mulberry32(seed))
   for (let r = 1; r < restarts; r++) {
-    const candidate = fitModel(fitSet, valSet, kind, hidden, init, maxEpochs)
+    const candidate = fitModel(fitSet, valSet, kind, hidden, init, maxEpochs, mulberry32(seed + r * 0x85ebca6b))
     if (candidate.valRmse < best.valRmse) best = candidate
   }
   return best
@@ -367,8 +415,6 @@ export function trainWeights(
   })
 
   const n = prepared.length
-  const kind = chooseKind(n)
-  const hidden = chooseHidden(n)
 
   const priorMetrics = () => rmseMae(prepared, p => evalHealthW(p, init))
 
@@ -381,12 +427,20 @@ export function trainWeights(
     }
   }
 
-  // ---- K-fold cross-validated adoption gate ----
-  // Estimate out-of-fold generalization of the trained model vs the safe prior.
-  // Only the comparison uses CV; we never trust a single noisy holdout.
-  const shuffledSet = shuffled(prepared)
+  // Deterministic seed derived from the dataset shape: same data → same model.
+  const baseSeed = (n * 2654435761) ^ Math.round(prepared[0].label * 1009) ^ 0x9e3779b9
+  const rng = mulberry32(baseSeed)
+
+  // ---- K-fold cross-validated capacity selection + adoption gate ----
+  // Every affordable capacity (none / linear / mlp) is trained on the same folds;
+  // the best out-of-fold RMSE wins, then must still beat the safe prior by both a
+  // relative and an absolute margin to be adopted. We never trust a single
+  // noisy holdout, and we never pick capacity from sample count alone.
+  const candidates = candidateCapacities(n)
+  const shuffledSet = shuffled(prepared, rng)
   const k = Math.min(KFOLDS, Math.max(2, Math.floor(n / 6)))
-  let cvTrainedSe = 0, cvPriorSe = 0, cvCount = 0
+  const cvSe = new Array(candidates.length).fill(0)
+  let cvPriorSe = 0, cvCount = 0
   for (let f = 0; f < k; f++) {
     const fold = shuffledSet.filter((_, i) => i % k === f)
     const rest = shuffledSet.filter((_, i) => i % k !== f)
@@ -394,14 +448,25 @@ export function trainWeights(
     // inner holdout from rest for early stopping
     const innerVal = rest.slice(0, Math.max(2, Math.round(rest.length * 0.2)))
     const innerTrain = rest.slice(innerVal.length)
-    const { weights } = fitModelBest(innerTrain.length ? innerTrain : rest, innerVal, kind, hidden, init, maxEpochs)
+    for (let c = 0; c < candidates.length; c++) {
+      const { kind, hidden } = candidates[c]
+      const { weights } = fitModelBest(
+        innerTrain.length ? innerTrain : rest, innerVal, kind, hidden, init, maxEpochs,
+        baseSeed + f * 7919 + c * 104729, MLP_RESTARTS_CV
+      )
+      for (const p of fold) cvSe[c] += (p.label - evalHealthW(p, weights)) ** 2
+    }
     for (const p of fold) {
-      cvTrainedSe += (p.label - evalHealthW(p, weights)) ** 2
       cvPriorSe += (p.label - evalHealthW(p, init)) ** 2
       cvCount++
     }
   }
-  const cvTrained = Math.sqrt(cvTrainedSe / Math.max(cvCount, 1))
+  let bestIdx = 0
+  for (let c = 1; c < candidates.length; c++) {
+    if (cvSe[c] < cvSe[bestIdx]) bestIdx = c
+  }
+  const chosen = candidates[bestIdx]
+  const cvTrained = Math.sqrt(cvSe[bestIdx] / Math.max(cvCount, 1))
   const cvPrior = Math.sqrt(cvPriorSe / Math.max(cvCount, 1))
   const adopted = cvTrained <= cvPrior * ADOPT_MARGIN && cvTrained <= cvPrior - ADOPT_ABS
 
@@ -416,8 +481,18 @@ export function trainWeights(
   // ---- Adopted: final fit on all data with an internal early-stopping holdout ----
   const finalVal = shuffledSet.slice(0, Math.max(4, Math.round(n * 0.2)))
   const finalTrain = shuffledSet.slice(finalVal.length)
-  const { weights, epochs } = fitModelBest(finalTrain, finalVal, kind, hidden, init, maxEpochs)
+  const { weights, epochs } = fitModelBest(
+    finalTrain, finalVal, chosen.kind, chosen.hidden, init, maxEpochs,
+    baseSeed ^ 0x6a09e667, MLP_RESTARTS_FINAL
+  )
   const train = rmseMae(prepared, p => evalHealthW(p, weights))
+
+  // Embed generalization provenance so predict() can calibrate its confidence.
+  weights.meta = {
+    valRmse: Math.round(cvTrained * 100) / 100,
+    sampleCount: n,
+    trainedAt: new Date().toISOString()
+  }
 
   return {
     weights,
@@ -426,7 +501,7 @@ export function trainWeights(
     valRmse: cvTrained,
     sampleCount: n,
     epochs,
-    residualKind: kind,
+    residualKind: chosen.kind,
     adopted: true
   }
 }
