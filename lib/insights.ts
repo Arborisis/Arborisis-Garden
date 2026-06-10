@@ -2,6 +2,7 @@ import type { Plant, Reading, PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import { summarizeWeatherForAgent, type WeatherContext } from "@/lib/weather";
 import { summarizeBioForAgent } from "@/lib/bioelectric/analysis";
+import { resolveInsightsModel, samplingParams } from "@/lib/llm-models";
 
 export const INSIGHTS_CACHE_KIND = "ai_insights_cache";
 export const INSIGHTS_CACHE_TTL_MS = 4 * 60 * 60 * 1000;
@@ -242,9 +243,9 @@ async function generateInsightsWithOpenRouter(plant: PlantWithReadings, weather?
       "X-Title": process.env.OPENROUTER_APP_NAME ?? "Arborisis Garden"
     },
     body: JSON.stringify({
-      model: process.env.OPENROUTER_INSIGHTS_MODEL ?? "openai/gpt-4o-mini",
+      model: resolveInsightsModel(),
       stream: false,
-      temperature: 0.25,
+      ...samplingParams(resolveInsightsModel(), 0.25),
       max_tokens: 900,
       messages: [
         {

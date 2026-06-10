@@ -19,7 +19,7 @@ DEVICE_INGEST_TOKEN=change-me-device-token
 
 # LLM (OpenRouter)
 OPENROUTER_API_KEY=sk-or-...
-OPENROUTER_MODEL=anthropic/claude-3.5-sonnet
+OPENROUTER_MODEL=anthropic/claude-opus-4.8
 
 # Railway Object Storage (S3-compatible)
 STORAGE_ENDPOINT=https://...railway.app

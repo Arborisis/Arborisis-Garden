@@ -95,7 +95,11 @@ The app will be live at `https://<your-service>.up.railway.app` within a few min
 | `DATABASE_URL` | **yes** | PostgreSQL connection string. In Railway: `${{Postgres.DATABASE_URL}}` |
 | `DEVICE_INGEST_TOKEN` | **yes** | Shared secret sent by each Pico in `X-Device-Token`; use a random 32-char string |
 | `OPENROUTER_API_KEY` | **yes** | [OpenRouter](https://openrouter.ai) API key for LLM analysis and AI insights |
-| `OPENROUTER_MODEL` | no | LLM model name (default: `anthropic/claude-3.5-sonnet`) |
+| `OPENROUTER_MODEL` | no | Main LLM model — agent, chat, calibration (default: `anthropic/claude-opus-4.8`) |
+| `OPENROUTER_VISION_MODEL` | no | Photo analysis model (default: `OPENROUTER_MODEL`, then `anthropic/claude-opus-4.8`) |
+| `OPENROUTER_INSIGHTS_MODEL` | no | Dashboard insights model (default: `anthropic/claude-sonnet-4.6`) |
+| `OPENROUTER_COMPACT_MODEL` | no | Conversation compaction model (default: `anthropic/claude-haiku-4.5`) |
+| `OPENROUTER_REASONING_EFFORT` | no | Extended reasoning on agent/vision/calibration: `low`/`medium`/`high`/`off` (default: `high`) |
 | `STORAGE_ENDPOINT` | no | Railway Object Storage endpoint URL (for plant photos) |
 | `STORAGE_ACCESS_KEY_ID` | no | Object Storage access key |
 | `STORAGE_SECRET_ACCESS_KEY` | no | Object Storage secret key |
@@ -371,7 +375,7 @@ npm run test
 | Database | PostgreSQL + Prisma 5 |
 | ML | Custom gradient-descent weight learner (no external ML deps) |
 | Storage | Railway Object Storage (S3-compatible), `@aws-sdk/client-s3` |
-| LLM | OpenRouter (`anthropic/claude-3.5-sonnet` default) |
+| LLM | OpenRouter (`anthropic/claude-opus-4.8` agent/vision, `anthropic/claude-sonnet-4.6` insights, `anthropic/claude-haiku-4.5` compaction) |
 | Weather | Open-Meteo (free, no API key) |
 | Push | W3C Web Push + VAPID (`web-push`) |
 | IoT firmware | MicroPython 1.23 on Raspberry Pi Pico WH |

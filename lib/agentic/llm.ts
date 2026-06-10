@@ -1,4 +1,5 @@
 import type { ResearchSource } from "./types";
+import { resolveAgentModel, samplingParams, reasoningParams } from "../llm-models";
 
 export type LlmMessage = { role: string; content: string };
 
@@ -53,17 +54,19 @@ function extractWebSources(annotations: OpenRouterAnnotation[]): ResearchSource[
  */
 export async function callOpenRouter(
   messages: LlmMessage[],
-  options?: { webSearch?: boolean; temperature?: number; model?: string }
+  options?: { webSearch?: boolean; temperature?: number; model?: string; reasoning?: boolean }
 ): Promise<OpenRouterResult> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
     throw new Error("OPENROUTER_API_KEY manquant");
   }
 
+  const model = options?.model ?? resolveAgentModel();
   const body: Record<string, unknown> = {
-    model: options?.model ?? process.env.OPENROUTER_MODEL ?? "anthropic/claude-sonnet-4-6",
+    model,
     stream: false,
-    temperature: options?.temperature ?? 0.15,
+    ...samplingParams(model, options?.temperature ?? 0.15),
+    ...(options?.reasoning === false ? {} : reasoningParams()),
     messages
   };
 

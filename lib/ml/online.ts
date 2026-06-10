@@ -66,6 +66,11 @@ const DEFAULTS = {
   minSamples: 5
 }
 
+// Huber clamp on the error gradient (same rationale as the batch trainer): a
+// single mislabeled sample in the small online buffer can't yank the model.
+// The non-regression gate still evaluates plain weighted RMSE.
+const HUBER_DELTA = 10
+
 // Adam constants (local — independent of the batch trainer's schedule).
 const BETA1 = 0.9
 const BETA2 = 0.999
@@ -247,7 +252,8 @@ export function onlineUpdate(
       const raw = blend + residual
       const pred = Math.max(0, Math.min(100, raw))
       const saturated = (raw <= 0 && pred === 0) || (raw >= 100 && pred === 100)
-      const dPred = saturated ? 0 : (p.weight * (pred - p.label)) / wsum
+      const err = Math.max(-HUBER_DELTA, Math.min(HUBER_DELTA, pred - p.label))
+      const dPred = saturated ? 0 : (p.weight * err) / wsum
 
       const scoresArr = [p.scores.sensor, p.scores.visual, p.scores.weather, p.scores.llm, p.scores.bio]
       const mixArr = [mix.sensor, mix.visual, mix.weather, mix.llm, mix.bio]
